@@ -6,6 +6,7 @@ template or by the AI, through the connected Gmail account, within a daily
 limit. Nothing here talks to a CRM.
 """
 import os
+from datetime import time as datetime_time
 
 from django.db import models
 from django.utils import timezone
@@ -30,6 +31,19 @@ class AppSettings(models.Model):
     pause_reason = models.CharField(max_length=500, blank=True, default="")
     last_adjust_date = models.DateField(null=True, blank=True)
     last_cut_at = models.DateTimeField(null=True, blank=True)
+
+    # Business hours: emails go out only inside this window (local time)
+    send_window = models.BooleanField(default=True)
+    send_days = models.CharField(max_length=20, default="0,1,2,3,4", help_text="Weekdays, 0 = Monday.")
+    send_start = models.TimeField(default=datetime_time(10, 0))
+    send_end = models.TimeField(default=datetime_time(18, 0))
+
+    # Alerts
+    notify_interested = models.BooleanField(default=True, help_text="Email me when someone replies with interest.")
+
+    @property
+    def send_day_list(self):
+        return [int(d) for d in (self.send_days or "").split(",") if d.strip().isdigit()]
 
     class Meta:
         verbose_name = verbose_name_plural = "Settings"
@@ -150,6 +164,13 @@ class Campaign(models.Model):
     cta_url = models.URLField(blank=True, default="")
     review_first = models.BooleanField(default=True, help_text="Hold every email until you approve it.")
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+
+    # Follow-ups: sent in the same Gmail thread when there is no reply
+    followups = models.BooleanField(default=True)
+    followup_days = models.PositiveSmallIntegerField(default=4, help_text="Days to wait for a reply.")
+    max_followups = models.PositiveSmallIntegerField(default=2)
+    followup_instructions = models.TextField(blank=True, default="", help_text="AI campaigns: tips for the follow-ups.")
+    followup_body = models.TextField(blank=True, default="", help_text="Template campaigns: the follow-up text.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -205,6 +226,10 @@ class Message(models.Model):
 
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name="messages")
     contact = models.ForeignKey(Contact, on_delete=models.CASCADE, related_name="messages")
+    step = models.PositiveSmallIntegerField(default=0, help_text="0 = first email, 1+ = follow-up number.")
+    parent = models.ForeignKey("self", null=True, blank=True, on_delete=models.CASCADE, related_name="followup_set",
+                               help_text="The first email this follow-up belongs to.")
+    rfc_message_id = models.CharField(max_length=255, blank=True, default="", help_text="Message-ID header we set.")
     subject = models.CharField(max_length=300, blank=True, default="")
     body = models.TextField(blank=True, default="", help_text="Plain text; paragraphs separated by a blank line.")
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
@@ -219,10 +244,14 @@ class Message(models.Model):
 
     class Meta:
         ordering = ["created_at"]
-        constraints = [models.UniqueConstraint(fields=["campaign", "contact"], name="one_message_per_contact")]
+        constraints = [models.UniqueConstraint(fields=["campaign", "contact", "step"], name="one_message_per_step")]
 
     def __str__(self):
-        return f"{self.campaign} → {self.contact}"
+        return f"{self.campaign} → {self.contact}" + (f" (follow-up {self.step})" if self.step else "")
+
+    @property
+    def is_followup(self):
+        return self.step > 0
 
     @property
     def gmail_url(self):
@@ -235,7 +264,23 @@ class Reply(models.Model):
     KIND_BOUNCE = "bounce"
     KIND_CHOICES = [(KIND_REPLY, "Reply"), (KIND_BOUNCE, "Bounce")]
 
+    CAT_INTERESTED = "interested"
+    CAT_INFO = "info"
+    CAT_REFERRAL = "referral"
+    CAT_NOT_NOW = "not_now"
+    CAT_NOT_INTERESTED = "not_interested"
+    CAT_OOO = "ooo"
+    CAT_OTHER = "other"
+    CATEGORY_CHOICES = [
+        (CAT_INTERESTED, "Interested"), (CAT_INFO, "Asked for info"), (CAT_REFERRAL, "Referral"),
+        (CAT_NOT_NOW, "Not now"), (CAT_NOT_INTERESTED, "Not interested"), (CAT_OOO, "Out of office"),
+        (CAT_OTHER, "Other"),
+    ]
+    POSITIVE = (CAT_INTERESTED, CAT_INFO, CAT_REFERRAL)
+
     message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="replies")
+    category = models.CharField(max_length=16, choices=CATEGORY_CHOICES, blank=True, default="", db_index=True)
+    summary = models.CharField(max_length=300, blank=True, default="", help_text="One line from the AI.")
     gmail_id = models.CharField(max_length=64, unique=True)
     kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=KIND_REPLY)
     from_email = models.CharField(max_length=320, blank=True, default="")

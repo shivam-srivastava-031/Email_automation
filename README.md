@@ -59,15 +59,45 @@ cannot read your inbox. Disconnecting in Settings also revokes the access at Goo
 
 ## Run
 
+### Always on (Windows, recommended)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
+```
+
+Registers two scheduled tasks, `EmailAutomation-web` and `EmailAutomation-worker`,
+that start hidden when you log in and restart if they stop. Logs go to `logs\web.log`
+and `logs\worker.log`. Remove them with `scripts\uninstall_autostart.ps1`.
+
+### By hand
+
 Two terminals, both with the virtual environment active:
 
 ```bash
 python manage.py runserver        # the app: http://localhost:5000
-python manage.py run_worker       # writes AI drafts and sends queued emails
+python manage.py run_worker       # does all the automatic work
 ```
 
-Emails are only written and sent while the worker runs. `run_worker --once`
-does a single pass, for running it from a scheduled task instead.
+Only one worker can run at a time (a database lock): a second one waits on standby.
+
+## What runs automatically
+
+The worker, every few seconds:
+
+1. **Writes** first emails and follow-ups with the AI.
+2. **Checks** each email (right name, no placeholders or links, sensible length). Passing
+   emails are sent on their own unless the campaign asks to review everything;
+   the rest wait under "To review" with the reason.
+3. **Follows up** in the same Gmail thread after N days without a reply (up to 3, set per
+   campaign). Any real reply, bounce or unsubscribe stops them; out-of-office does not.
+4. **Sends** one email at a time, only in business hours (default Mon–Fri 10:00–18:00),
+   within today's limit, `SEND_INTERVAL_SECONDS` apart.
+5. **Reads replies** every couple of minutes and the AI sorts them: Interested, Asked for
+   info, Referral, Not now, Not interested, Out of office. You get an email for the
+   promising ones; "not interested" unsubscribes the contact.
+6. **Protects the account**: warm-up, limit cuts on bounces, pauses on Gmail limits.
+
+`run_worker --once` does a single pass.
 
 ## Tests
 

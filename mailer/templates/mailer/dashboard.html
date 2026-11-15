@@ -12,7 +12,9 @@
         <span class="pill chip-idle"><span class="dot"></span>Idle</span>
       {% endif %}
       <h1 style="margin:12px 0 6px">Send personal emails to your contacts from Gmail</h1>
-      <p class="muted" style="max-width:600px">Import contacts from a CSV, write one template or let the AI write each email, review them, and they go out one by one from {% if account %}<b style="color:var(--text)">{{ account.email }}</b>{% else %}your Gmail{% endif %} within your daily limit.</p>
+      <p class="muted" style="max-width:600px">Import contacts, start a campaign, and the rest runs on its own from {% if account %}<b style="color:var(--text)">{{ account.email }}</b>{% else %}your Gmail{% endif %}: AI-written, quality-checked emails within your daily limit and business hours, follow-ups when nobody replies, and replies sorted for you.</p>
+      <p class="small" style="margin-top:8px">{% if app.send_window %}{% if in_window %}<span class="chip chip-ok">Sending hours now</span>{% elif next_window %}<span class="chip chip-idle">Outside sending hours</span> <span class="muted">next window {{ next_window|date:"D j M, H:i" }}</span>{% endif %}{% endif %}
+      {% if interested %} <a class="chip cat-interested" href="{% url 'inbox' %}?f=replies&cat=positive" style="text-decoration:none">{{ interested }} interested repl{{ interested|pluralize:"y,ies" }}</a>{% endif %}</p>
     </div>
     <div class="row" style="flex:1 1 220px;justify-content:flex-end">
       <a href="{% url 'contacts' %}" class="btn btn-outline">Import contacts</a>

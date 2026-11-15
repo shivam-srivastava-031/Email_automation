@@ -50,6 +50,13 @@ main.wrap { padding-top: 24px; padding-bottom: 64px; }
 .inbox-snippet { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .reply-body { white-space: normal; overflow-wrap: anywhere; }
 
+/* Reply categories (AI) */
+.cat-interested { background: var(--green-bg); color: var(--green); }
+.cat-info, .cat-referral { background: var(--tint); color: var(--blue-dark); }
+.cat-not_now { background: var(--amber-bg); color: var(--amber); }
+.cat-not_interested { background: var(--red-bg); color: var(--red); }
+.cat-ooo, .cat-other { background: var(--grey-bg); color: var(--body); }
+
 /* Chips (status) */
 .chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .chip-draft, .chip-review, .chip-paused { background: var(--amber-bg); color: var(--amber); }

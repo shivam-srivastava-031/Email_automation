@@ -46,6 +46,9 @@ def dashboard(request):
         "app": app,
         "limit": safety.effective_limit(app),
         "sent_today": sent_today_count(),
+        "in_window": safety.in_send_window(app),
+        "next_window": safety.next_window_start(app),
+        "interested": Reply.objects.filter(kind=Reply.KIND_REPLY, category__in=Reply.POSITIVE).count(),
         "to_review": status_counts.get(Message.STATUS_DRAFT, 0),
         "queued": status_counts.get(Message.STATUS_APPROVED, 0),
         "writing": status_counts.get(Message.STATUS_PENDING, 0),
@@ -322,6 +325,8 @@ def campaign_detail(request, pk):
         "app": app,
         "limit": safety.effective_limit(app),
         "sent_today": sent_today_count(),
+        "in_window": safety.in_send_window(app),
+        "next_window": safety.next_window_start(app),
     })
 
 
@@ -395,10 +400,17 @@ def attachment_delete(request, pk):
 def inbox(request):
     view = request.GET.get("f") if request.GET.get("f") in ("replies", "sent") else "replies"
     q = request.GET.get("q", "").strip()
+    cat = request.GET.get("cat", "")
     account = GmailAccount.current()
 
     if view == "replies":
         rows = Reply.objects.select_related("message__contact", "message__campaign")
+        if cat == "bounce":
+            rows = rows.filter(kind=Reply.KIND_BOUNCE)
+        elif cat == "positive":
+            rows = rows.filter(kind=Reply.KIND_REPLY, category__in=Reply.POSITIVE)
+        elif cat in dict(Reply.CATEGORY_CHOICES):
+            rows = rows.filter(kind=Reply.KIND_REPLY, category=cat)
         if q:
             rows = rows.filter(Q(from_email__icontains=q) | Q(from_name__icontains=q) | Q(subject__icontains=q)
                                | Q(snippet__icontains=q) | Q(message__contact__company__icontains=q))
@@ -411,29 +423,48 @@ def inbox(request):
     page = Paginator(rows, 30).get_page(request.GET.get("page"))
 
     # The open conversation: the email we sent and every reply to it.
-    thread = None
+    thread, timeline = None, []
     open_id = request.GET.get("open")
     if open_id and open_id.isdigit():
-        thread = Message.objects.select_related("contact", "campaign").filter(pk=open_id, status=Message.STATUS_SENT).first()
+        thread = Message.objects.select_related("contact", "campaign", "parent").filter(pk=open_id, status=Message.STATUS_SENT).first()
+        if thread is not None and thread.parent_id:
+            thread = thread.parent  # always show the whole conversation from the first email
     if thread is not None:
         app = AppSettings.load()
-        thread.preview_html = build_email(thread.body, thread.campaign.cta_text, thread.campaign.cta_url, app.signature)[0]
-        thread.thread_replies = list(thread.replies.order_by("received_at"))
-        thread.replies.filter(is_read=False).update(is_read=True)
+        sent = Message.objects.filter(campaign=thread.campaign, contact=thread.contact, status=Message.STATUS_SENT)
+        replies = Reply.objects.filter(message__in=sent)
+        for m in sent:
+            m.preview_html = build_email(m.body, m.campaign.cta_text, m.campaign.cta_url, app.signature)[0]
+            timeline.append(("sent", m.sent_at, m))
+        timeline += [("reply", r.received_at, r) for r in replies]
+        timeline.sort(key=lambda t: t[1])
+        replies.filter(is_read=False).update(is_read=True)
+
+    cat_counts = dict(Reply.objects.filter(kind=Reply.KIND_REPLY).values_list("category").annotate(n=Count("id")))
+    categories = [("positive", "Interested + info + referral", sum(cat_counts.get(c, 0) for c in Reply.POSITIVE))]
+    categories += [(k, label, cat_counts.get(k, 0)) for k, label in Reply.CATEGORY_CHOICES if cat_counts.get(k)]
+    bounces = Reply.objects.filter(kind=Reply.KIND_BOUNCE).count()
+    if bounces:
+        categories.append(("bounce", "Bounced", bounces))
 
     return render(request, "mailer/inbox.html", {
         "tab": "inbox",
         "view": view,
         "q": q,
+        "cat": cat,
+        "categories": categories,
         "page": page,
         "thread": thread,
+        "timeline": timeline,
+        "positive_count": categories[0][2],
         "account": account,
         "can_read": bool(account and account.can_read_replies),
         "reply_count": Reply.objects.filter(kind=Reply.KIND_REPLY).count(),
         "unread_count": Reply.objects.filter(is_read=False).count(),
         "sent_count": Message.objects.filter(status=Message.STATUS_SENT).count(),
-        "replied_count": Message.objects.filter(replied_at__isnull=False).count(),
-        "keep": urlencode({k: v for k, v in (("f", view), ("q", q), ("page", request.GET.get("page", ""))) if v}),
+        "people_count": Message.objects.filter(status=Message.STATUS_SENT, step=0).count(),
+        "replied_count": Message.objects.filter(replied_at__isnull=False, step=0).count(),
+        "keep": urlencode({k: v for k, v in (("f", view), ("q", q), ("cat", cat), ("page", request.GET.get("page", ""))) if v}),
     })
 
 
@@ -470,6 +501,8 @@ def settings_view(request):
         "app": app,
         "limit": safety.effective_limit(app),
         "paused": safety.is_paused(app),
+        "in_window": safety.in_send_window(app),
+        "next_window": safety.next_window_start(app),
         "events": SafetyEvent.objects.all()[:12],
         "bounced_recent": bounced,
         "sent_recent": recent_sent,

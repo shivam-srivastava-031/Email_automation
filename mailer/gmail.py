@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone as dt_timezone
 from email.message import EmailMessage
-from email.utils import formataddr, parseaddr, parsedate_to_datetime
+from email.utils import formataddr, make_msgid, parseaddr, parsedate_to_datetime
 
 import requests
 from django.conf import settings
@@ -146,12 +146,22 @@ def _credentials(account):
     return creds
 
 
-def build_mime(from_name, from_email, to, subject, html_body, text_body, attachments=()):
-    """The RFC 822 message. `attachments` are (filename, bytes) pairs."""
+def build_mime(from_name, from_email, to, subject, html_body, text_body, attachments=(),
+               message_id=None, in_reply_to=None, references=None):
+    """The RFC 822 message. `attachments` are (filename, bytes) pairs.
+
+    in_reply_to / references make a follow-up show up inside the original
+    conversation (in Gmail and in the recipient's mail client).
+    """
     msg = EmailMessage()
     msg["From"] = formataddr((from_name, from_email)) if from_name else from_email
     msg["To"] = to
     msg["Subject"] = subject
+    if message_id:
+        msg["Message-ID"] = message_id
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = references or in_reply_to
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
     for filename, data in attachments:
@@ -184,10 +194,15 @@ def _call(request, what):
         raise GmailError(f"Could not reach Gmail: {exc}") from exc
 
 
-def send_message(account, mime):
-    """Send through the Gmail API. Returns {"id", "threadId"}."""
+def new_message_id(from_email):
+    return make_msgid(domain=(from_email or "localhost").split("@")[-1])
+
+
+def send_message(account, mime, thread_id=None):
+    """Send through the Gmail API (into `thread_id` for a follow-up). Returns {"id", "threadId"}."""
     raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-    sent = _call(_service(account).users().messages().send(userId="me", body={"raw": raw}), "send the email")
+    body = {"raw": raw, **({"threadId": thread_id} if thread_id else {})}
+    sent = _call(_service(account).users().messages().send(userId="me", body=body), "send the email")
     return {"id": sent.get("id", ""), "threadId": sent.get("threadId", "")}
 
 

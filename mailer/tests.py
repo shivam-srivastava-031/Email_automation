@@ -13,6 +13,13 @@ from .models import AppSettings, Campaign, Contact, ContactList, GmailAccount, M
 from .render import build_email, fill, unknown_fields
 
 
+GOOD_BODY = (
+    "Hi {{first_name}},\n\nI am a full stack developer with nine months of internship experience building Django and "
+    "React applications for a SaaS platform, and I would love to be considered for openings in your team. My resume "
+    "is attached and my portfolio is linked below for a quick look.\n\nWould you be open to a short call this week?"
+)
+
+
 def connect_gmail():
     return GmailAccount.objects.create(pk=1, email="sender@example.com", refresh_token="rt")
 
@@ -81,7 +88,7 @@ class CampaignStartTests(TestCase):
         self.assertEqual(svc.start(c), 0)  # starting again adds only new contacts
 
     def test_no_review_queues_directly(self):
-        c = Campaign.objects.create(name="T", contact_list=self.lst, subject="s", body="b", review_first=False)
+        c = Campaign.objects.create(name="T", contact_list=self.lst, subject="Hello", body=GOOD_BODY, review_first=False)
         svc.start(c)
         self.assertEqual(Message.objects.get().status, Message.STATUS_APPROVED)
 
@@ -101,9 +108,9 @@ class CampaignStartTests(TestCase):
 class WorkerTests(TestCase):
     def setUp(self):
         connect_gmail()
-        AppSettings.objects.create(pk=1, sender_name="Sam", daily_limit=2)
+        AppSettings.objects.create(pk=1, sender_name="Sam", daily_limit=2, send_window=False)
         self.contacts = [Contact.objects.create(email=f"p{i}@example.com", first_name=f"P{i}") for i in range(3)]
-        self.campaign = Campaign.objects.create(name="C", subject="Hi {{first_name}}", body="Hello", review_first=False)
+        self.campaign = Campaign.objects.create(name="C", subject="Hi {{first_name}}", body=GOOD_BODY, review_first=False)
         svc.start(self.campaign)
         self.sent = []
 
@@ -220,7 +227,9 @@ class ReplySyncTests(TestCase):
 
     def run_sync(self, listed, data):
         from .replies import sync_replies
-        return sync_replies(list_ids=lambda account, q: listed, fetch=lambda account, mid: data[mid])
+        return sync_replies(list_ids=lambda account, q: listed, fetch=lambda account, mid: data[mid],
+                            classifier=lambda subj, text: {"category": "other", "summary": ""},
+                            sender=lambda *a, **k: {"id": "n"})
 
     def test_stores_only_new_replies_in_our_threads(self):
         from .models import Reply
@@ -270,9 +279,9 @@ class ReplySyncTests(TestCase):
 class GmailParsingTests(TestCase):
     def test_send_next_stores_thread_id(self):
         connect_gmail()
-        AppSettings.objects.create(pk=1, daily_limit=5)
+        AppSettings.objects.create(pk=1, daily_limit=5, send_window=False)
         Contact.objects.create(email="p@example.com")
-        c = Campaign.objects.create(name="C", subject="s", body="b", review_first=False)
+        c = Campaign.objects.create(name="C", subject="Hello", body=GOOD_BODY, review_first=False)
         svc.start(c)
         msg = svc.send_next(sender=lambda account, mime: {"id": "m1", "threadId": "t9"})
         self.assertEqual((msg.gmail_id, msg.gmail_thread_id), ("m1", "t9"))
@@ -295,9 +304,9 @@ class SafetyTests(TestCase):
         from . import safety
         self.safety = safety
         connect_gmail()
-        self.app = AppSettings.objects.create(pk=1, daily_limit=40, current_limit=20)
+        self.app = AppSettings.objects.create(pk=1, daily_limit=40, current_limit=20, send_window=False)
         self.contacts = [Contact.objects.create(email=f"p{i}@example.com") for i in range(3)]
-        self.campaign = Campaign.objects.create(name="C", subject="s", body="b", review_first=False)
+        self.campaign = Campaign.objects.create(name="C", subject="Hello", body=GOOD_BODY, review_first=False)
         svc.start(self.campaign)
 
     def make_sent(self, n, when=None, bounced=0):
@@ -464,7 +473,8 @@ class ViewTests(TestCase):
                              subject="Re: My resume", snippet="Please share", body="Please share <b>notice</b>",
                              received_at=timezone.now())
         r = self.client.get(reverse("inbox"))
-        self.assertContains(r, "Re: My resume")
+        self.assertContains(r, "Please share")      # the reply in the list (company + summary/snippet)
+        self.assertContains(r, "ProspectCo")
         self.assertContains(r, 'class="badge badge-blue"')  # unread count in the tab
         r = self.client.get(reverse("inbox"), {"f": "replies", "open": msg.pk})
         self.assertContains(r, "Please share &lt;b&gt;notice&lt;/b&gt;")  # reply body escaped
@@ -503,3 +513,224 @@ class ViewTests(TestCase):
         r = self.client.get(reverse("gmail_callback"), {"state": "evil", "code": "x"})
         self.assertRedirects(r, reverse("settings"))
         self.assertFalse(GmailAccount.objects.exists())
+
+
+@override_settings(SEND_INTERVAL_SECONDS=0, GEMINI_API_KEY="k")
+class AutomationTests(TestCase):
+    def setUp(self):
+        import tempfile
+        self.media = tempfile.TemporaryDirectory()
+        self.media_override = override_settings(MEDIA_ROOT=self.media.name)
+        self.media_override.enable()
+        connect_gmail()
+        GmailAccount.objects.filter(pk=1).update(scopes=READ_SCOPES)
+        AppSettings.objects.create(pk=1, daily_limit=50, send_window=False, warmup=False, sender_name="Shivam")
+        self.jane = Contact.objects.create(email="jane@prospect.example", first_name="Jane", company="ProspectCo")
+        self.campaign = Campaign.objects.create(name="Jobs", subject="Application - Shivam", body=GOOD_BODY,
+                                                review_first=False, followups=True, followup_days=4, max_followups=2)
+        self.sent = []
+        self.alerts = []
+
+    def tearDown(self):
+        self.media_override.disable()
+        self.media.cleanup()
+
+    def send(self, account, mime, thread_id=None):
+        self.sent.append((mime, thread_id))
+        return {"id": f"g{len(self.sent)}", "threadId": thread_id or "t-root"}
+
+    def sync(self, body, classifier=None, subject="Re: Application - Shivam"):
+        from .replies import sync_replies
+        data = {"r1": {**reply_data("r1", "t-root", subject=subject), "body": body, "snippet": body[:50]}}
+        return sync_replies(list_ids=lambda a, q: [("r1", "t-root")], fetch=lambda a, mid: data[mid],
+                            classifier=classifier or (lambda s, t: {"category": "interested", "summary": "Wants a call"}),
+                            sender=lambda account, mime, **k: self.alerts.append(mime) or {"id": "a"})
+
+    def test_quality_check(self):
+        from .quality import check
+        good = fill(GOOD_BODY, self.jane.merge_values())
+        self.assertEqual(check("Hello", good, self.jane), [])
+        self.assertTrue(any("placeholder" in p for p in check("Hello", good + " at [Company Name]", self.jane)))
+        self.assertTrue(any("link" in p for p in check("Hello", good + " https://x.example", self.jane)))
+        self.assertTrue(any("greet" in p for p in check("Hello", good.replace("Jane", "there"), self.jane)))
+        self.assertTrue(any("short" in p for p in check("Hello", "Hi Jane, thanks.", self.jane)))
+        self.assertTrue(any("AI" in p for p in check("Hello", good + " As an AI I wrote this.", self.jane)))
+
+    def test_auto_send_when_check_passes_else_hold(self):
+        svc.start(self.campaign)
+        self.assertEqual(Message.objects.get().status, Message.STATUS_APPROVED)
+        bad = Campaign.objects.create(name="Bad", subject="Hi", body="Hello there.", review_first=False)
+        svc.start(bad)
+        held = bad.messages.get()
+        self.assertEqual(held.status, Message.STATUS_DRAFT)
+        self.assertIn("Held for review", held.error)
+
+    def test_ai_emails_are_gated(self):
+        ai_campaign = Campaign.objects.create(name="AI", writer=Campaign.WRITER_AI, review_first=False)
+        svc.start(ai_campaign)
+        good = fill(GOOD_BODY, self.jane.merge_values())
+        svc.write_pending(writer=lambda c, ct, app: {"subject": "Full Stack Developer - Shivam", "body": good})
+        self.assertEqual(ai_campaign.messages.get().status, Message.STATUS_APPROVED)
+        Message.objects.filter(campaign=ai_campaign).update(status=Message.STATUS_PENDING)
+        svc.write_pending(writer=lambda c, ct, app: {"subject": "Hi", "body": good + " Regards to [Company]."})
+        self.assertEqual(ai_campaign.messages.get().status, Message.STATUS_DRAFT)
+
+    def test_followups_go_in_the_same_thread_until_the_last_one(self):
+        from .models import Attachment
+        Attachment.objects.create(campaign=self.campaign, name="resume.pdf", size=4,
+                                  file=SimpleUploadedFile("resume.pdf", b"%PDF"))
+        t0 = timezone.now()
+        svc.start(self.campaign)
+        first = svc.send_next(now=t0, sender=self.send)
+        self.assertEqual((first.status, first.gmail_thread_id), (Message.STATUS_SENT, "t-root"))
+        root_mime = self.sent[0][0]
+        self.assertEqual([a.get_filename() for a in root_mime.iter_attachments()], ["resume.pdf"])
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=1)), 0)        # not yet due
+
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=5)), 1)
+        fu1 = svc.send_next(now=t0 + timedelta(days=5), sender=self.send)
+        mime, thread = self.sent[-1]
+        self.assertEqual((fu1.step, thread, fu1.gmail_thread_id), (1, "t-root", "t-root"))
+        self.assertEqual(mime["Subject"], "Re: Application - Shivam")
+        self.assertEqual(mime["In-Reply-To"], first.rfc_message_id)
+        self.assertEqual(list(mime.iter_attachments()), [])                       # resume only once
+        self.assertTrue(fu1.body.startswith("Hi Jane,"))
+
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=10)), 1)
+        svc.send_next(now=t0 + timedelta(days=10), sender=self.send)
+        self.assertIn(first.rfc_message_id, self.sent[-1][0]["References"])
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=20)), 0)      # max 2 reached
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.status, Campaign.STATUS_DONE)
+
+    def test_campaign_not_done_while_a_followup_may_come(self):
+        svc.start(self.campaign)
+        svc.send_next(sender=self.send)
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.status, Campaign.STATUS_RUNNING)
+
+    def test_reply_stops_followups_and_alerts_me(self):
+        t0 = timezone.now()
+        svc.start(self.campaign)
+        svc.send_next(now=t0, sender=self.send)
+        self.assertEqual(self.sync("Yes, happy to talk tomorrow at 11."), 1)
+        from .models import Reply
+        self.assertEqual(Reply.objects.get().category, Reply.CAT_INTERESTED)
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=5)), 0)
+        self.assertEqual(len(self.alerts), 1)
+        self.assertEqual(self.alerts[0]["To"], "sender@example.com")
+        self.assertIn("[Interested]", self.alerts[0]["Subject"])
+
+    def test_out_of_office_does_not_stop_followups(self):
+        t0 = timezone.now()
+        svc.start(self.campaign)
+        svc.send_next(now=t0, sender=self.send)
+        classifier = mock.Mock()
+        self.sync("I am out of office until Monday with limited access to email.", classifier=classifier)
+        classifier.assert_not_called()
+        from .models import Reply
+        self.assertEqual(Reply.objects.get().category, Reply.CAT_OOO)
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=5)), 1)
+        self.assertEqual(self.alerts, [])
+
+    def test_not_interested_unsubscribes(self):
+        svc.start(self.campaign)
+        svc.send_next(sender=self.send)
+        self.sync("We are not hiring.", classifier=lambda s, t: {"category": "not_interested", "summary": "Not hiring"})
+        self.jane.refresh_from_db()
+        self.assertTrue(self.jane.unsubscribed)
+
+    def test_classifier_failure_falls_back_to_rules(self):
+        svc.start(self.campaign)
+        svc.send_next(sender=self.send)
+
+        def broken(s, t):
+            raise ai.AIError("quota")
+        self.sync("Please remove me from your list.", classifier=broken)
+        from .models import Reply
+        self.assertEqual(Reply.objects.get().category, Reply.CAT_NOT_INTERESTED)
+
+    def test_business_hours(self):
+        from . import safety
+        from datetime import datetime as dt, time as t
+        AppSettings.objects.filter(pk=1).update(send_window=True, send_days="0,1,2,3,4", send_start=t(10), send_end=t(18))
+        tz = timezone.get_current_timezone()
+        saturday = timezone.make_aware(dt(2026, 11, 14, 12, 0), tz)   # a Saturday
+        monday_10 = timezone.make_aware(dt(2026, 11, 16, 10, 0), tz)
+        self.assertFalse(safety.in_send_window(now=saturday))
+        self.assertEqual(safety.next_window_start(now=saturday), monday_10)
+        self.assertFalse(safety.in_send_window(now=monday_10 - timedelta(minutes=1)))
+        self.assertTrue(safety.in_send_window(now=monday_10 + timedelta(hours=1)))
+        self.assertFalse(safety.in_send_window(now=monday_10 + timedelta(hours=8)))  # 18:00 is closed
+        svc.start(self.campaign)
+        self.assertIsNone(svc.send_next(now=saturday, sender=self.send))
+        self.assertEqual(svc.send_next(now=monday_10 + timedelta(hours=1), sender=self.send).status, Message.STATUS_SENT)
+
+    def test_ai_followup_gets_the_history(self):
+        ai_campaign = Campaign.objects.create(name="AI", writer=Campaign.WRITER_AI, review_first=False, followup_days=3)
+        root = Message.objects.create(campaign=ai_campaign, contact=self.jane, status=Message.STATUS_SENT, subject="My application",
+                                      body="Hi Jane, first email.", gmail_thread_id="t1", sent_at=timezone.now() - timedelta(days=4))
+        ai_campaign.status = Campaign.STATUS_RUNNING
+        ai_campaign.save()
+        self.assertEqual(svc.schedule_followups(), 1)
+        writer = mock.Mock(return_value={"body": "Hi Jane,\n\nJust checking in on my note from last week about full stack roles at ProspectCo. Happy to share anything else that helps. Would a quick call work?"})
+        svc.write_pending(followup_writer=writer)
+        fu = ai_campaign.messages.get(step=1)
+        self.assertEqual((fu.status, fu.subject, fu.parent), (Message.STATUS_APPROVED, "Re: My application", root))
+        args = writer.call_args.args
+        self.assertEqual((args[3], args[4]), ([("My application", "Hi Jane, first email.")], 1))
+
+    def test_strip_signoff(self):
+        self.assertEqual(ai.strip_signoff("Hi Jane,\n\nThanks for reading.\n\nBest regards,\nShivam Kumar"),
+                         "Hi Jane,\n\nThanks for reading.")
+        self.assertEqual(ai.strip_signoff("Hi Jane,\n\nThanks for reading."), "Hi Jane,\n\nThanks for reading.")
+
+    def test_followup_writer_and_classifier_call_gemini(self):
+        def resp(text):
+            r = mock.Mock(status_code=200)
+            r.json.return_value = {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+            return r
+        with mock.patch("mailer.ai.requests.post", return_value=resp('{"body": "Hi Jane,\\n\\nJust a nudge.\\n\\nRegards,\\nShivam"}')) as post:
+            out = ai.write_followup(self.campaign, self.jane, AppSettings.load(), [("S", "B")], 2)
+        self.assertEqual(out, {"body": "Hi Jane,\n\nJust a nudge."})
+        self.assertIn("last follow-up", post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"])
+        with mock.patch("mailer.ai.requests.post", return_value=resp('{"category": "Referral", "summary": "Contact Ravi"}')):
+            self.assertEqual(ai.classify_reply("S", "Please write to Ravi"), {"category": "referral", "summary": "Contact Ravi"})
+        with mock.patch("mailer.ai.requests.post", return_value=resp('{"category": "maybe"}')):
+            self.assertEqual(ai.classify_reply("S", "?")["category"], "other")
+
+    def test_inbox_filters_and_timeline(self):
+        user = get_user_model().objects.create_user("me", password="pw-for-tests")
+        self.client.force_login(user)
+        t0 = timezone.now()
+        svc.start(self.campaign)
+        svc.send_next(now=t0, sender=self.send)
+        svc.schedule_followups(t0 + timedelta(days=5))
+        fu = svc.send_next(now=t0 + timedelta(days=5), sender=self.send)
+        self.sync("Sounds great, are you free Friday?")
+        r = self.client.get(reverse("inbox"), {"f": "replies", "cat": "positive"})
+        self.assertContains(r, "Interested")
+        r = self.client.get(reverse("inbox"), {"f": "sent", "open": fu.pk})   # opening a follow-up shows the whole thread
+        self.assertContains(r, "You · follow-up 1")
+        self.assertContains(r, "Wants a call")
+
+    def test_settings_business_hours_form(self):
+        user = get_user_model().objects.create_user("me2", password="pw-for-tests")
+        self.client.force_login(user)
+        r = self.client.post(reverse("settings"), {
+            "sender_name": "Shivam", "daily_limit": 40, "auto_protect": "on", "warmup": "on", "warmup_start": 15,
+            "warmup_step": 5, "send_window": "on", "send_day_choices": ["0", "2", "4"], "send_start": "09:30",
+            "send_end": "17:00", "notify_interested": "on"})
+        self.assertRedirects(r, reverse("settings"))
+        app = AppSettings.load()
+        self.assertEqual((app.send_days, str(app.send_start)), ("0,2,4", "09:30:00"))
+        r = self.client.post(reverse("settings"), {"daily_limit": 40, "warmup_start": 15, "warmup_step": 5, "send_window": "on",
+                                                   "send_day_choices": ["1"], "send_start": "18:00", "send_end": "10:00"})
+        self.assertContains(r, "Must be later than the start time")
+
+    def test_single_worker_lock(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from mailer.management.commands.run_worker import Command
+        call_command("run_worker", "--once", stdout=StringIO())   # gets the lock and runs one pass
+        self.assertTrue(Command()._lock())                         # same session may take it again

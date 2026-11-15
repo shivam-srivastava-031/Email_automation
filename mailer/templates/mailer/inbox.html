@@ -5,7 +5,7 @@
   <div class="row spread">
     <div>
       <h1>Inbox</h1>
-      <p class="hint">Emails you sent from this app, and the replies people sent back.</p>
+      <p class="hint">Everything you sent from this app and every reply, sorted by the AI.</p>
     </div>
     {% if can_read %}
     <form method="post" action="{% url 'inbox_sync' %}" class="inline">{% csrf_token %}
@@ -19,18 +19,19 @@
     <div class="alert alert-warning">Gmail is not connected. <a href="{% url 'settings' %}">Connect Gmail</a> to send emails and see replies.</div>
   {% elif not can_read %}
     <div class="alert alert-warning row spread">
-      <span>To show replies here, the app needs permission to read the replies to emails it sent. Reconnect Gmail once and allow it.</span>
+      <span>To show and sort replies, the app needs permission to read the replies to emails it sent. Reconnect Gmail once and allow it.</span>
       <a class="btn btn-primary btn-sm" href="{% url 'gmail_connect' %}">Reconnect Gmail</a>
     </div>
   {% elif account.last_reply_sync %}
-    <p class="small muted" style="margin-top:-6px">Last checked {{ account.last_reply_sync|timesince }} ago. The worker checks every couple of minutes while it runs.</p>
+    <p class="small muted" style="margin-top:-6px">Last checked {{ account.last_reply_sync|timesince }} ago. The worker checks every couple of minutes.</p>
   {% endif %}
 
   <section class="stats" aria-label="Summary">
-    <div class="stat"><div class="label">Sent</div><div class="value">{{ sent_count }}</div></div>
+    <div class="stat"><div class="label">People emailed</div><div class="value">{{ people_count }}</div><div class="sub">{{ sent_count }} emails incl. follow-ups</div></div>
     <div class="stat"><div class="label">Replied</div><div class="value" {% if replied_count %}style="color:var(--green)"{% endif %}>{{ replied_count }}</div>
-      <div class="sub">{% if sent_count %}{% widthratio replied_count sent_count 100 %}% reply rate{% else %}—{% endif %}</div></div>
-    <div class="stat"><div class="label">Unread replies</div><div class="value" {% if unread_count %}style="color:var(--blue-dark)"{% endif %}>{{ unread_count }}</div></div>
+      <div class="sub">{% if people_count %}{% widthratio replied_count people_count 100 %}% reply rate{% else %}—{% endif %}</div></div>
+    <a class="stat" href="?f=replies&cat=positive"><div class="label">Interested / asked / referred</div><div class="value" {% if positive_count %}style="color:var(--blue-dark)"{% endif %}>{{ positive_count }}</div><div class="sub">Open them first →</div></a>
+    <div class="stat"><div class="label">Unread</div><div class="value">{{ unread_count }}</div></div>
   </section>
 
   <div class="cols">
@@ -38,12 +39,18 @@
     <section class="card col-side" style="flex:1 1 380px;overflow:hidden">
       <div class="card-head">
         <nav class="filters grow" aria-label="Show">
-          <a href="?f=replies" class="{% if view == 'replies' %}active{% endif %}" {% if view == 'replies' %}aria-current="page"{% endif %}>Replies{% if unread_count %} · {{ unread_count }} new{% endif %}</a>
-          <a href="?f=sent" class="{% if view == 'sent' %}active{% endif %}" {% if view == 'sent' %}aria-current="page"{% endif %}>Sent · {{ sent_count }}</a>
+          <a href="?f=replies" class="{% if view == 'replies' %}active{% endif %}">Replies{% if unread_count %} · {{ unread_count }} new{% endif %}</a>
+          <a href="?f=sent" class="{% if view == 'sent' %}active{% endif %}">Sent · {{ sent_count }}</a>
         </nav>
       </div>
+      {% if view == 'replies' and categories %}
+      <nav class="filters" aria-label="Category" style="padding:10px 16px;border-bottom:1px solid var(--line)">
+        <a href="?f=replies" class="{% if not cat %}active{% endif %}">All</a>
+        {% for key, label, n in categories %}{% if n %}<a href="?f=replies&cat={{ key }}" class="{% if cat == key %}active{% endif %}">{{ label }} · {{ n }}</a>{% endif %}{% endfor %}
+      </nav>
+      {% endif %}
       <form method="get" style="padding:12px 16px;border-bottom:1px solid var(--line)" role="search">
-        <input type="hidden" name="f" value="{{ view }}">
+        <input type="hidden" name="f" value="{{ view }}">{% if cat %}<input type="hidden" name="cat" value="{{ cat }}">{% endif %}
         <label for="iq" style="position:absolute;left:-9999px">Search</label>
         <input type="search" id="iq" name="q" value="{{ q }}" placeholder="Search name, email, company, subject">
       </form>
@@ -58,11 +65,11 @@
               <span class="grow">
                 <span class="row" style="gap:6px;flex-wrap:nowrap">
                   <span class="inbox-name">{{ r.from_name|default:r.from_email }}</span>
-                  {% if r.kind == 'bounce' %}<span class="chip chip-failed">Bounced</span>{% endif %}
+                  {% if r.kind == 'bounce' %}<span class="chip chip-failed">Bounced</span>{% elif r.category %}<span class="chip cat-{{ r.category }}">{{ r.get_category_display }}</span>{% endif %}
                   <span class="small muted" style="margin-left:auto;white-space:nowrap">{{ r.received_at|date:"M j" }}</span>
                 </span>
-                <span class="inbox-subject">{{ r.subject|default:"(no subject)" }}</span>
-                <span class="inbox-snippet">{{ r.snippet|truncatechars:110 }}</span>
+                <span class="inbox-subject">{{ r.message.contact.company|default:r.subject }}</span>
+                <span class="inbox-snippet">{{ r.summary|default:r.snippet|truncatechars:110 }}</span>
               </span>
             </a>
           </li>
@@ -70,12 +77,13 @@
         {% else %}
           {% for m in page %}
           <li>
-            <a href="?{{ keep }}&open={{ m.pk }}" class="inbox-item {% if thread.pk == m.pk %}active{% endif %}">
+            <a href="?{{ keep }}&open={{ m.pk }}" class="inbox-item {% if thread.pk == m.pk or thread.pk == m.parent_id %}active{% endif %}">
               <span class="avatar" aria-hidden="true">{{ m.contact.first_name|first|upper|default:"?" }}{{ m.contact.last_name|first|upper }}</span>
               <span class="grow">
                 <span class="row" style="gap:6px;flex-wrap:nowrap">
                   <span class="inbox-name">{{ m.contact.full_name|default:m.contact.email }}</span>
-                  {% if m.reply_count %}<span class="chip chip-sent">Replied</span>{% endif %}
+                  {% if m.step %}<span class="chip chip-queued">Follow-up {{ m.step }}</span>{% endif %}
+                  {% if m.replied_at %}<span class="chip chip-sent">Replied</span>{% endif %}
                   <span class="small muted" style="margin-left:auto;white-space:nowrap">{{ m.sent_at|date:"M j" }}</span>
                 </span>
                 <span class="inbox-subject">{{ m.subject }}</span>
@@ -90,16 +98,16 @@
         <div class="card-foot row spread small">
           <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
           <span class="row">
-            {% if page.has_previous %}<a class="btn btn-outline btn-sm" href="?f={{ view }}{% if q %}&q={{ q|urlencode }}{% endif %}&page={{ page.previous_page_number }}">Previous</a>{% endif %}
-            {% if page.has_next %}<a class="btn btn-outline btn-sm" href="?f={{ view }}{% if q %}&q={{ q|urlencode }}{% endif %}&page={{ page.next_page_number }}">Next</a>{% endif %}
+            {% if page.has_previous %}<a class="btn btn-outline btn-sm" href="?f={{ view }}{% if cat %}&cat={{ cat }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}&page={{ page.previous_page_number }}">Previous</a>{% endif %}
+            {% if page.has_next %}<a class="btn btn-outline btn-sm" href="?f={{ view }}{% if cat %}&cat={{ cat }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}&page={{ page.next_page_number }}">Next</a>{% endif %}
           </span>
         </div>
         {% endif %}
       {% else %}
         <div class="empty">
-          {% if q %}<h3>Nothing matches</h3><p>Try another search.</p>
-          {% elif view == 'replies' %}<h3>No replies yet</h3><p>{% if can_read %}Replies to your emails show up here a few minutes after they arrive.{% else %}Reconnect Gmail above to see replies.{% endif %}</p>
-          {% else %}<h3>Nothing sent yet</h3><p>Start a campaign and keep the worker running.</p>{% endif %}
+          {% if q or cat %}<h3>Nothing matches</h3><p>Try another search or category.</p>
+          {% elif view == 'replies' %}<h3>No replies yet</h3><p>{% if can_read %}Replies show up here a few minutes after they arrive.{% else %}Reconnect Gmail above to see replies.{% endif %}</p>
+          {% else %}<h3>Nothing sent yet</h3><p>Start a campaign; the worker does the rest.</p>{% endif %}
         </div>
       {% endif %}
     </section>
@@ -115,35 +123,33 @@
           {% if thread.gmail_url %}<a class="btn btn-outline btn-sm" href="{{ thread.gmail_url }}" target="_blank" rel="noopener">Open in Gmail</a>{% endif %}
         </div>
         <div class="card-pad stack">
-          <article class="email-box">
-            <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--soft)">
-              <span class="chip chip-queued">You</span>
-              <span class="grow small muted">to {{ thread.contact.email }} · <a href="{% url 'campaign_detail' thread.campaign_id %}">{{ thread.campaign.name }}</a></span>
-              <span class="small muted">{{ thread.sent_at|date:"M j, Y H:i" }}</span>
-            </div>
-            <div class="preview-subject">{{ thread.subject }}</div>
-            <div class="preview-body">{{ thread.preview_html|safe }}</div>
-          </article>
-
-          {% for r in thread.thread_replies %}
-          <article class="email-box" style="{% if r.kind == 'bounce' %}border-color:#FCA5A5{% else %}border-color:#BFDBFE{% endif %}">
-            <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:{% if r.kind == 'bounce' %}#FEF2F2{% else %}var(--tint){% endif %}">
-              <span class="chip {% if r.kind == 'bounce' %}chip-failed{% else %}chip-sent{% endif %}">{% if r.kind == 'bounce' %}Bounced{% else %}Reply{% endif %}</span>
-              <span class="grow small"><b>{{ r.from_name|default:r.from_email }}</b> <span class="muted">&lt;{{ r.from_email }}&gt;</span></span>
-              <span class="small muted">{{ r.received_at|date:"M j, Y H:i" }}</span>
-            </div>
-            <div class="preview-body reply-body">{{ r.body|default:r.snippet|linebreaksbr }}</div>
-          </article>
-          {% empty %}
-          <p class="small muted">No reply yet.</p>
+          {% for kind, when, item in timeline %}
+            {% if kind == 'sent' %}
+            <article class="email-box">
+              <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--soft)">
+                <span class="chip chip-queued">{% if item.step %}You · follow-up {{ item.step }}{% else %}You{% endif %}</span>
+                <span class="grow small muted">to {{ item.contact.email }} · <a href="{% url 'campaign_detail' item.campaign_id %}">{{ item.campaign.name }}</a></span>
+                <span class="small muted">{{ when|date:"M j, Y H:i" }}</span>
+              </div>
+              <div class="preview-subject">{{ item.subject }}</div>
+              <div class="preview-body">{{ item.preview_html|safe }}</div>
+            </article>
+            {% else %}
+            <article class="email-box" style="{% if item.kind == 'bounce' %}border-color:#FCA5A5{% else %}border-color:#BFDBFE{% endif %}">
+              <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:{% if item.kind == 'bounce' %}#FEF2F2{% else %}var(--tint){% endif %}">
+                {% if item.kind == 'bounce' %}<span class="chip chip-failed">Bounced</span>{% else %}<span class="chip cat-{{ item.category|default:'other' }}">{{ item.get_category_display|default:"Reply" }}</span>{% endif %}
+                <span class="grow small"><b>{{ item.from_name|default:item.from_email }}</b> <span class="muted">&lt;{{ item.from_email }}&gt;</span></span>
+                <span class="small muted">{{ when|date:"M j, Y H:i" }}</span>
+              </div>
+              {% if item.summary %}<div style="padding:10px 18px 0" class="small"><b>AI summary:</b> {{ item.summary }}</div>{% endif %}
+              <div class="preview-body reply-body">{{ item.body|default:item.snippet|linebreaksbr }}</div>
+            </article>
+            {% endif %}
           {% endfor %}
-
-          {% if thread.thread_replies %}
-          <p class="small muted">To answer, use <a href="{{ thread.gmail_url }}" target="_blank" rel="noopener">Open in Gmail</a>; the conversation continues there.</p>
-          {% endif %}
+          <p class="small muted">To answer, use <a href="{{ thread.gmail_url }}" target="_blank" rel="noopener">Open in Gmail</a>; the conversation continues there and any reply stops the follow-ups.</p>
         </div>
       {% else %}
-        <div class="empty"><h3>Pick a conversation</h3><p>Choose a reply or a sent email on the left to read it.</p></div>
+        <div class="empty"><h3>Pick a conversation</h3><p>Choose a reply or a sent email on the left to read the whole thread.</p></div>
       {% endif %}
     </section>
   </div>

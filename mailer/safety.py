@@ -60,6 +60,35 @@ def is_paused(app=None, now=None):
     return bool(app.paused_until and app.paused_until > (now or timezone.now()))
 
 
+def in_send_window(app=None, now=None):
+    """Inside business hours (or the window is switched off)."""
+    app = app or AppSettings.load()
+    if not app.send_window:
+        return True
+    local = timezone.localtime(now or timezone.now())
+    return local.weekday() in app.send_day_list and app.send_start <= local.time() < app.send_end
+
+
+def next_window_start(app=None, now=None):
+    """When the next sending window opens (None if days are empty)."""
+    app = app or AppSettings.load()
+    local = timezone.localtime(now or timezone.now())
+    days = app.send_day_list
+    if not days:
+        return None
+    for ahead in range(8):
+        day = (local + timedelta(days=ahead)).date()
+        if day.weekday() not in days:
+            continue
+        start = timezone.make_aware(datetime.combine(day, app.send_start), local.tzinfo)
+        end = timezone.make_aware(datetime.combine(day, app.send_end), local.tzinfo)
+        if local < start:
+            return start
+        if start <= local < end:
+            return local
+    return None
+
+
 def next_morning(now=None):
     local = timezone.localtime(now or timezone.now())
     tomorrow = (local + timedelta(days=1)).date()
@@ -138,6 +167,12 @@ def handle_reply(reply):
     """Bounces and opt-outs: stop emailing that address (always, even with protection off)."""
     contact = reply.message.contact
     open_msgs = Message.objects.filter(contact=contact, status__in=Message.OPEN_STATUSES)
+    if reply.kind == Reply.KIND_REPLY and reply.category == Reply.CAT_NOT_INTERESTED and not contact.unsubscribed:
+        contact.unsubscribed = True
+        contact.save(update_fields=["unsubscribed", "updated_at"])
+        open_msgs.update(status=Message.STATUS_SKIPPED, error="Contact said they are not interested.")
+        event(SafetyEvent.LEVEL_INFO, f"{contact.email} is not interested; unsubscribed.")
+        return "unsubscribed"
     if reply.kind == Reply.KIND_BOUNCE:
         if not contact.bounced:
             contact.bounced = True
