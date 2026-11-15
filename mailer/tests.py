@@ -575,6 +575,33 @@ class AutomationTests(TestCase):
         svc.write_pending(writer=lambda c, ct, app: {"subject": "Hi", "body": good + " Regards to [Company]."})
         self.assertEqual(ai_campaign.messages.get().status, Message.STATUS_DRAFT)
 
+    def test_never_say_list_is_told_to_the_ai_checked_and_rewritten_once(self):
+        from . import ai
+        from .quality import check
+        ai_campaign = Campaign.objects.create(name="AI", writer=Campaign.WRITER_AI, review_first=False,
+                                              avoid_phrases="student\nfinal year")
+        self.assertEqual(ai_campaign.avoid_list, ["student", "final year"])
+        self.assertIn('"student"; "final year"', ai.build_prompt(ai_campaign, self.jane, AppSettings.load()))
+        good = fill(GOOD_BODY, self.jane.merge_values())
+        self.assertTrue(any("student" in p for p in check("Hi", good + " I am a final-year Student.", self.jane,
+                                                          avoid=ai_campaign.avoid_list)))
+        self.assertEqual(check("Hi", good + " I mentor students.", self.jane, avoid=["final year"]), [])
+
+        svc.start(ai_campaign)
+        drafts = iter([good + " I am a B.Tech student.", good])  # first try fails the check, the rewrite passes
+        calls = []
+        svc.write_pending(writer=lambda c, ct, app: calls.append(1) or {"subject": "Application", "body": next(drafts)})
+        msg = ai_campaign.messages.get()
+        self.assertEqual((len(calls), msg.status, msg.body), (2, Message.STATUS_APPROVED, good))
+
+        Message.objects.filter(pk=msg.pk).update(status=Message.STATUS_PENDING)
+        calls.clear()
+        svc.write_pending(writer=lambda c, ct, app: calls.append(1) or {"subject": "Application",
+                                                                       "body": good + " A final year student."})
+        msg.refresh_from_db()
+        self.assertEqual((len(calls), msg.status), (2, Message.STATUS_DRAFT))
+        self.assertIn("never-say", msg.error)
+
     def test_followups_go_in_the_same_thread_until_the_last_one(self):
         from .models import Attachment
         Attachment.objects.create(campaign=self.campaign, name="resume.pdf", size=4,

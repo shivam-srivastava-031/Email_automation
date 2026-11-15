@@ -46,7 +46,7 @@ class CampaignForm(forms.ModelForm):
         model = Campaign
         fields = ["name", "contact_list", "writer", "ai_instructions", "subject", "body",
                   "cta_text", "cta_url", "review_first",
-                  "followups", "followup_days", "max_followups", "followup_instructions", "followup_body"]
+                  "followups", "followup_days", "max_followups", "followup_instructions", "followup_body", "avoid_phrases"]
         widgets = {
             "writer": forms.RadioSelect,
             "ai_instructions": forms.Textarea(attrs={"rows": 4, "placeholder": "e.g. Mention we help sales teams book more meetings. Keep it friendly. Ask for a 15-minute call."}),
@@ -57,6 +57,7 @@ class CampaignForm(forms.ModelForm):
             "followup_instructions": forms.Textarea(attrs={"rows": 3, "placeholder": "e.g. Mention I can start within 15 days. Keep it very short."}),
             "followup_body": forms.Textarea(attrs={"rows": 5, "placeholder": "Hi {{first_name}},\n\nJust following up on my email below..."}),
             "followup_days": forms.NumberInput(attrs={"min": 1, "max": 30}),
+            "avoid_phrases": forms.Textarea(attrs={"rows": 3, "placeholder": "student\nfinal year"}),
             "max_followups": forms.NumberInput(attrs={"min": 0, "max": 3}),
         }
         labels = {
@@ -72,6 +73,7 @@ class CampaignForm(forms.ModelForm):
             "max_followups": "Follow-ups at most",
             "followup_instructions": "Tips for the follow-ups",
             "followup_body": "Follow-up text",
+            "avoid_phrases": "Never say",
         }
 
     def __init__(self, *args, **kwargs):

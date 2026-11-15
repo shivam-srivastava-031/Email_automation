@@ -44,6 +44,11 @@ Return JSON only: {{"subject": "<under 70 characters>", "body": "<the email>"}}
 """
 
 
+def avoid_rule(campaign):
+    phrases = campaign.avoid_list
+    return ("\n- Never use these words or phrases: " + "; ".join(f'"{p}"' for p in phrases) + ".") if phrases else ""
+
+
 def build_prompt(campaign, contact, app_settings):
     extra = ", ".join(f"{k}: {v}" for k, v in (contact.extra or {}).items() if v) or "none"
     cta_rule = (f"\n- A button labelled \"{campaign.cta_text}\" is added under the email; you may refer to it."
@@ -58,7 +63,7 @@ def build_prompt(campaign, contact, app_settings):
         company=contact.company or "unknown",
         extra=extra,
         instructions=campaign.ai_instructions.strip() or "Introduce yourself and ask for a short call.",
-        cta_rule=cta_rule,
+        cta_rule=cta_rule + avoid_rule(campaign),
     )
 
 
@@ -173,7 +178,8 @@ def write_followup(campaign, contact, app_settings, history, n, timeout=60):
         name=contact.full_name or "the recipient", first_name=contact.first_name or "there",
         role=contact.role or "unknown role", company=contact.company or "their company",
         history="\n\n".join(f"Subject: {s}\n{b}" for s, b in history),
-        instructions=campaign.followup_instructions.strip() or campaign.ai_instructions.strip() or "Keep it short and polite.",
+        instructions=(campaign.followup_instructions.strip() or campaign.ai_instructions.strip() or "Keep it short and polite.")
+        + avoid_rule(campaign),
         closing=("This is the last follow-up: say you won't email again and leave the door open." if last
                  else "End with one simple question."),
     )

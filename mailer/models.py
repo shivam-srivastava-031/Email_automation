@@ -6,6 +6,7 @@ template or by the AI, through the connected Gmail account, within a daily
 limit. Nothing here talks to a CRM.
 """
 import os
+import re
 from datetime import time as datetime_time
 
 from django.db import models
@@ -171,6 +172,8 @@ class Campaign(models.Model):
     max_followups = models.PositiveSmallIntegerField(default=2)
     followup_instructions = models.TextField(blank=True, default="", help_text="AI campaigns: tips for the follow-ups.")
     followup_body = models.TextField(blank=True, default="", help_text="Template campaigns: the follow-up text.")
+    avoid_phrases = models.TextField(blank=True, default="",
+                                     help_text="Words or phrases the emails must never contain, one per line.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -179,6 +182,10 @@ class Campaign(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def avoid_list(self):
+        return [p.strip() for p in re.split(r"[\n,]", self.avoid_phrases or "") if p.strip()]
 
     @property
     def is_ai(self):

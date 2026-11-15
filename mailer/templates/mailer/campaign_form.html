@@ -102,8 +102,12 @@
         <section class="card card-pad">
           <label class="check" for="{{ form.review_first.id_for_label }}">
             {{ form.review_first }}
-            <span>{{ form.review_first.label }}<span class="hint" style="display:block;font-weight:400">Off = fully automatic: every email passes a quality check first (right name, no placeholders or links, sensible length) and only those that pass go out on their own. Anything doubtful waits under “To review” with the reason.</span></span>
+            <span>{{ form.review_first.label }}<span class="hint" style="display:block;font-weight:400">Off = fully automatic: every email passes a quality check first (right name, no placeholders or links, nothing from “Never say”, sensible length) and only those that pass go out on their own. Anything doubtful waits under “To review” with the reason.</span></span>
           </label>
+          <div class="field" style="margin-top:14px">
+            <label for="{{ form.avoid_phrases.id_for_label }}">{{ form.avoid_phrases.label }} <span class="muted" style="font-weight:400">(optional)</span></label>{{ form.avoid_phrases }}{{ form.avoid_phrases.errors }}
+            <div class="help">One word or phrase per line, e.g. things that are not true about you. The AI is told to avoid them; an email that still contains one is rewritten once, then held under “To review” instead of sent.</div>
+          </div>
         </section>
 
         <div class="row">

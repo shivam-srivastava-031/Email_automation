@@ -57,7 +57,7 @@ def gate(campaign, contact, subject, body, followup=False):
     """(status, note) for a written email: queued if it may go out on its own, else a draft."""
     if campaign.review_first:
         return Message.STATUS_DRAFT, ""
-    problems = quality.check(subject, body, contact, followup=followup)
+    problems = quality.check(subject, body, contact, followup=followup, avoid=campaign.avoid_list)
     if problems:
         return Message.STATUS_DRAFT, "Held for review: " + "; ".join(problems) + "."
     return Message.STATUS_APPROVED, ""
@@ -186,14 +186,18 @@ def write_pending(limit=5, writer=ai.write_email, followup_writer=ai.write_follo
                .order_by("id")[:limit])
     for msg in pending:
         try:
-            if msg.step:
-                history = [(m.subject, m.body) for m in chain(msg)]
-                out = followup_writer(msg.campaign, msg.contact, app, history, msg.step)
-                msg.body = out["body"]
-                msg.subject = msg.subject or reply_subject((msg.parent or msg).subject)
-            else:
-                out = writer(msg.campaign, msg.contact, app)
-                msg.subject, msg.body = out["subject"], out["body"]
+            for _ in range(2):  # an email that fails the check gets one rewrite before it is held
+                if msg.step:
+                    history = [(m.subject, m.body) for m in chain(msg)]
+                    out = followup_writer(msg.campaign, msg.contact, app, history, msg.step)
+                    msg.body = out["body"]
+                    msg.subject = msg.subject or reply_subject((msg.parent or msg).subject)
+                else:
+                    out = writer(msg.campaign, msg.contact, app)
+                    msg.subject, msg.body = out["subject"], out["body"]
+                status, note = gate(msg.campaign, msg.contact, msg.subject, msg.body, followup=bool(msg.step))
+                if not note:
+                    break
         except ai.AIError as exc:
             msg.attempts += 1
             msg.error = str(exc)
@@ -202,7 +206,7 @@ def write_pending(limit=5, writer=ai.write_email, followup_writer=ai.write_follo
             msg.save(update_fields=["attempts", "error", "status", "updated_at"])
             log.warning("AI could not write message %s: %s", msg.pk, exc)
             continue
-        msg.status, msg.error = gate(msg.campaign, msg.contact, msg.subject, msg.body, followup=bool(msg.step))
+        msg.status, msg.error = status, note
         msg.attempts = 0
         msg.save()
         written += 1

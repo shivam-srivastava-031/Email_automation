@@ -13,7 +13,12 @@ AI_SLIP = re.compile(r"\b(as an ai|i am an ai|i'm an ai|language model|chatgpt|g
 LIMITS = {"first": (40, 230), "followup": (12, 130)}
 
 
-def check(subject, body, contact, followup=False):
+def found_phrases(text, phrases):
+    """The phrases from `phrases` that occur in `text` (case-insensitive, at a word start)."""
+    return [p for p in phrases if re.search(r"(?<!\w)" + re.escape(p), text, re.I)]
+
+
+def check(subject, body, contact, followup=False, avoid=()):
     problems = []
     subject, body = (subject or "").strip(), (body or "").strip()
     words = len(body.split())
@@ -35,4 +40,7 @@ def check(subject, body, contact, followup=False):
     first = (contact.first_name or "").strip()
     if first and first.lower() not in body[:120].lower():
         problems.append(f"does not greet {first} by name")
+    banned = found_phrases(subject + " " + body, avoid)
+    if banned:
+        problems.append("says " + ", ".join(f"“{p}”" for p in banned) + " (on your never-say list)")
     return problems
