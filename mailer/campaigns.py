@@ -5,7 +5,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from . import ai, gmail
+from . import ai, gmail, safety
 from .models import AppSettings, Campaign, GmailAccount, Message, sent_today_count
 from .render import build_email, fill
 
@@ -142,7 +142,7 @@ def send_next(now=None, sender=gmail.send_message):
     if account is None:
         return None
     app = AppSettings.load()
-    if sent_today_count(now) >= app.daily_limit:
+    if safety.is_paused(app, now) or sent_today_count(now) >= safety.effective_limit(app):
         return None
     last = Message.objects.filter(status=Message.STATUS_SENT).order_by("-sent_at").values_list("sent_at", flat=True).first()
     if last and (now - last).total_seconds() < settings.SEND_INTERVAL_SECONDS:
@@ -153,8 +153,9 @@ def send_next(now=None, sender=gmail.send_message):
            .order_by("attempts", "id").first())  # list order; retries go to the back
     if msg is None:
         return None
-    if msg.contact.unsubscribed:
-        msg.status, msg.error = Message.STATUS_SKIPPED, "Contact unsubscribed."
+    if msg.contact.unsubscribed or msg.contact.bounced:
+        msg.status = Message.STATUS_SKIPPED
+        msg.error = "Contact unsubscribed." if msg.contact.unsubscribed else "Address bounced earlier."
         msg.save(update_fields=["status", "error", "updated_at"])
         refresh_done(msg.campaign)
         return msg
@@ -162,12 +163,14 @@ def send_next(now=None, sender=gmail.send_message):
     try:
         result = sender(account, compose(msg, account, app))
     except gmail.GmailError as exc:
-        msg.attempts += 1
         msg.error = str(exc)
-        if exc.permanent or msg.attempts >= MAX_SEND_ATTEMPTS:
-            msg.status = Message.STATUS_FAILED
+        if not exc.rate_limited:  # a Gmail limit is not this email's fault: keep it queued as is
+            msg.attempts += 1
+            if exc.permanent or msg.attempts >= MAX_SEND_ATTEMPTS:
+                msg.status = Message.STATUS_FAILED
         msg.save(update_fields=["attempts", "error", "status", "updated_at"])
         log.warning("Sending message %s failed: %s", msg.pk, exc)
+        safety.on_send_error(exc, now)
     else:
         if not isinstance(result, dict):  # a bare id
             result = {"id": result}
@@ -191,6 +194,7 @@ def tick(now=None, writer=ai.write_email, sender=gmail.send_message, syncer=None
     """One worker pass: write some AI drafts, send at most one email, and now and then look for replies."""
     from .replies import sync_replies
 
+    safety.daily_adjust(now)
     written = write_pending(writer=writer)
     sent = send_next(now=now, sender=sender)
     for campaign in Campaign.objects.filter(status=Campaign.STATUS_RUNNING):
@@ -202,4 +206,8 @@ def tick(now=None, writer=ai.write_email, sender=gmail.send_message, syncer=None
         except gmail.GmailError as exc:  # never let reply checks stop sending
             log.warning("Checking replies failed: %s", exc)
             GmailAccount.objects.filter(pk=1).update(last_reply_sync=now or timezone.now())
+            if exc.auth:
+                safety.on_send_error(exc, now)
+        else:
+            safety.check_bounces(now)
     return {"written": written, "sent": sent, "replies": new_replies}

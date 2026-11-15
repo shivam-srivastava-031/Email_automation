@@ -72,20 +72,46 @@ class CampaignForm(forms.ModelForm):
 class SettingsForm(forms.ModelForm):
     class Meta:
         model = AppSettings
-        fields = ["sender_name", "company_name", "product_description", "signature", "daily_limit"]
+        fields = ["sender_name", "company_name", "product_description", "signature", "daily_limit",
+                  "auto_protect", "warmup", "warmup_start", "warmup_step"]
         widgets = {
             "product_description": forms.Textarea(attrs={"rows": 4, "placeholder": "e.g. Full stack developer (Django, React) with 9+ months of internship experience... or: We build an AI assistant that books sales meetings."}),
             "signature": forms.Textarea(attrs={"rows": 3, "placeholder": "Your Name\nYour Title, Your Company"}),
         }
         labels = {"sender_name": "Your name", "company_name": "Company (optional)", "product_description": "About you / what you offer",
-                  "daily_limit": "Daily limit"}
-        help_texts = {"daily_limit": "Most emails sent per day. New Gmail accounts: start around 30-50."}
+                  "daily_limit": "Maximum per day", "auto_protect": "Protect my Gmail account automatically",
+                  "warmup": "Warm up slowly", "warmup_start": "Start at (per day)", "warmup_step": "Add each healthy day"}
+        help_texts = {"daily_limit": "The most emails per day, ever. The protection may keep today's limit lower."}
 
     def clean_daily_limit(self):
         n = self.cleaned_data["daily_limit"]
         if not 1 <= n <= 500:  # Gmail's own cap is ~500/day for free accounts
             raise forms.ValidationError("Choose between 1 and 500.")
         return n
+
+    def clean_warmup_start(self):
+        n = self.cleaned_data["warmup_start"]
+        if not 1 <= n <= 200:
+            raise forms.ValidationError("Choose between 1 and 200.")
+        return n
+
+    def clean_warmup_step(self):
+        n = self.cleaned_data["warmup_step"]
+        if not 1 <= n <= 50:
+            raise forms.ValidationError("Choose between 1 and 50.")
+        return n
+
+    def save(self, commit=True):
+        obj = super().save(commit=False)
+        # A lower maximum takes effect at once; protection never exceeds it.
+        if obj.current_limit and obj.current_limit > obj.daily_limit:
+            obj.current_limit = obj.daily_limit
+        # Turning the warm-up on restarts it from its starting point.
+        if "warmup" in self.changed_data and obj.warmup:
+            obj.current_limit = min(obj.daily_limit, obj.warmup_start)
+        if commit:
+            obj.save()
+        return obj
 
 
 class AttachmentForm(forms.Form):

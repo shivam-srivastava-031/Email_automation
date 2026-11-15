@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, Reply
+from .models import AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, Reply, SafetyEvent
 
 
 @admin.register(Contact)
@@ -34,6 +34,12 @@ class ReplyAdmin(admin.ModelAdmin):
     list_display = ("from_email", "subject", "kind", "received_at", "is_read")
     list_filter = ("kind", "is_read")
     search_fields = ("from_email", "subject", "snippet")
+
+
+@admin.register(SafetyEvent)
+class SafetyEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "level", "text")
+    list_filter = ("level",)
 
 
 admin.site.register(ContactList)

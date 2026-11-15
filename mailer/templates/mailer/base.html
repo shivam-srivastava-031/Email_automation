@@ -40,6 +40,15 @@
 </header>
 {% endif %}
 <main class="wrap">
+  {% if nav_paused %}
+  <div class="alert alert-error row spread" role="alert" style="margin-bottom:16px">
+    <span><b>Sending is paused by the automatic protection.</b> {{ nav_pause_reason }}</span>
+    <form method="post" action="{% url 'safety_resume' %}" class="inline" onsubmit="return confirm('Resume sending now? Only do this once the cause is fixed.')">{% csrf_token %}
+      <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      <button class="btn btn-outline btn-sm" type="submit">Resume now</button>
+    </form>
+  </div>
+  {% endif %}
   {% if messages %}
   <div class="alerts" role="status">
     {% for m in messages %}<div class="alert alert-{{ m.tags|default:'info' }}">{{ m }}</div>{% endfor %}

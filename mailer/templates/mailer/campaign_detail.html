@@ -26,8 +26,8 @@
   {% if campaign.status == 'running' and not account %}
     <div class="alert alert-warning">Gmail is not connected, so nothing can be sent. <a href="{% url 'settings' %}">Connect Gmail</a>.</div>
   {% endif %}
-  {% if campaign.status == 'running' and sent_today >= app.daily_limit %}
-    <div class="alert alert-info">Today’s limit of {{ app.daily_limit }} emails is reached. Sending continues tomorrow.</div>
+  {% if campaign.status == 'running' and sent_today >= limit %}
+    <div class="alert alert-info">Today’s limit of {{ limit }} emails is reached{% if limit < app.daily_limit %} (the automatic protection is keeping it below your maximum of {{ app.daily_limit }}){% endif %}. Sending continues tomorrow.</div>
   {% endif %}
 
   <section class="card card-pad">

@@ -30,11 +30,32 @@ if settings.GOOGLE_REDIRECT_URI.startswith(("http://localhost", "http://127.0.0.
 
 
 class GmailError(Exception):
-    """Sending failed. `permanent` means retrying will not help (e.g. access revoked)."""
+    """A Gmail API call failed.
 
-    def __init__(self, message, permanent=False):
+    permanent:    retrying this email will not help (bad address, no permission)
+    rate_limited: Gmail is limiting the account (quota / too many sends): slow down
+    auth:         access was revoked or expired: reconnect Gmail
+    """
+
+    def __init__(self, message, permanent=False, rate_limited=False, auth=False):
         super().__init__(message)
         self.permanent = permanent
+        self.rate_limited = rate_limited
+        self.auth = auth
+
+
+RATE_LIMIT_SIGNS = re.compile(
+    r"rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded|"
+    r"sending limit|sending quota|limit exceeded|too many", re.I)
+
+
+def classify_http_error(status, text):
+    """{permanent, rate_limited, auth} for a Gmail HTTP error status and body."""
+    if status == 429 or (status == 403 and RATE_LIMIT_SIGNS.search(text or "")):
+        return {"permanent": False, "rate_limited": True, "auth": False}
+    if status == 401:
+        return {"permanent": True, "rate_limited": False, "auth": True}
+    return {"permanent": status in (400, 403), "rate_limited": False, "auth": False}
 
 
 def is_configured():
@@ -117,7 +138,8 @@ def _credentials(account):
         try:
             creds.refresh(Request())
         except RefreshError as exc:
-            raise GmailError(f"Gmail access was revoked or expired. Reconnect Gmail in Settings. ({exc})", permanent=True) from exc
+            raise GmailError(f"Gmail access was revoked or expired. Reconnect Gmail in Settings. ({exc})",
+                             permanent=True, auth=True) from exc
         account.access_token = creds.token
         account.token_expiry = creds.expiry.replace(tzinfo=dt_timezone.utc) if creds.expiry else None
         account.save(update_fields=["access_token", "token_expiry"])
@@ -153,8 +175,9 @@ def _call(request, what):
         return request.execute()
     except HttpError as exc:
         status = getattr(exc.resp, "status", 0)
-        # 400 bad request / 401-403 no permission: retrying will not help.
-        raise GmailError(f"Gmail refused to {what} ({status}): {exc.reason}", permanent=status in (400, 401, 403)) from exc
+        body = (exc.content or b"").decode("utf-8", "replace") if isinstance(exc.content, bytes) else str(exc.content or "")
+        kind = classify_http_error(status, f"{exc.reason} {body}")
+        raise GmailError(f"Gmail refused to {what} ({status}): {exc.reason}", **kind) from exc
     except GmailError:
         raise
     except Exception as exc:  # network trouble: worth another try later

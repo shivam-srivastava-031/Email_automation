@@ -11,11 +11,12 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
-from . import ai, campaigns as svc, gmail
+from . import ai, campaigns as svc, gmail, safety
 from .csv_import import import_csv
 from .forms import AttachmentForm, CampaignForm, ContactForm, ImportForm, SettingsForm
 from .models import (
-    AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, Reply, sent_today_count,
+    AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, Reply, SafetyEvent,
+    sent_today_count,
 )
 from .render import BASE_FIELDS, build_email, fill, unknown_fields
 from .replies import sync_replies
@@ -43,6 +44,7 @@ def dashboard(request):
         "tab": "overview",
         "account": account,
         "app": app,
+        "limit": safety.effective_limit(app),
         "sent_today": sent_today_count(),
         "to_review": status_counts.get(Message.STATUS_DRAFT, 0),
         "queued": status_counts.get(Message.STATUS_APPROVED, 0),
@@ -318,6 +320,7 @@ def campaign_detail(request, pk):
         "progress": int(100 * done / stats["total"]) if stats["total"] else 0,
         "account": GmailAccount.current(),
         "app": app,
+        "limit": safety.effective_limit(app),
         "sent_today": sent_today_count(),
     })
 
@@ -460,15 +463,33 @@ def settings_view(request):
         form.save()
         messages.success(request, "Settings saved.")
         return redirect("settings")
+    bounced, recent_sent = safety.bounce_rate()
     return render(request, "mailer/settings.html", {
         "tab": "settings",
         "form": form,
+        "app": app,
+        "limit": safety.effective_limit(app),
+        "paused": safety.is_paused(app),
+        "events": SafetyEvent.objects.all()[:12],
+        "bounced_recent": bounced,
+        "sent_recent": recent_sent,
+        "bounce_pct": round(100 * bounced / recent_sent, 1) if recent_sent else 0,
+        "bounced_contacts": Contact.objects.filter(bounced=True).count(),
+        "unsub_contacts": Contact.objects.filter(unsubscribed=True).count(),
         "account": GmailAccount.current(),
         "gmail_configured": gmail.is_configured(),
         "ai_ready": bool(settings.GEMINI_API_KEY),
         "redirect_uri": settings.GOOGLE_REDIRECT_URI,
         "interval": settings.SEND_INTERVAL_SECONDS,
     })
+
+
+@login_required
+@require_POST
+def safety_resume(request):
+    safety.resume()
+    messages.success(request, "Sending resumed. The protection keeps watching bounces and Gmail limits.")
+    return redirect(request.POST.get("next") or "settings")
 
 
 @login_required

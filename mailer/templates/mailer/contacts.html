@@ -87,7 +87,7 @@
             <td>{{ c.email }}</td>
             <td>{{ c.company|default:"—" }}</td>
             <td class="small">{% for l in c.lists.all %}{{ l.name }}{% if not forloop.last %}, {% endif %}{% empty %}<span class="muted">—</span>{% endfor %}</td>
-            <td>{% if c.unsubscribed %}<span class="chip chip-skipped">Unsubscribed</span>{% else %}<span class="chip chip-ok">Active</span>{% endif %}</td>
+            <td>{% if c.bounced %}<span class="chip chip-failed" title="An email bounced; never emailed again">Bounced</span>{% elif c.unsubscribed %}<span class="chip chip-skipped">Unsubscribed</span>{% else %}<span class="chip chip-ok">Active</span>{% endif %}</td>
             <td style="white-space:nowrap;text-align:right">
               <form method="post" action="{% url 'contact_unsubscribe' c.pk %}" class="inline">{% csrf_token %}
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">

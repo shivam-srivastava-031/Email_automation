@@ -18,7 +18,18 @@ class AppSettings(models.Model):
     product_description = models.TextField(
         blank=True, default="", help_text="What you offer, in a few sentences. The AI uses this.")
     signature = models.TextField(blank=True, default="", help_text="Added under every email.")
-    daily_limit = models.PositiveIntegerField(default=50)
+    daily_limit = models.PositiveIntegerField(default=50, help_text="The most emails per day, ever.")
+
+    # Automatic protection (see safety.py)
+    auto_protect = models.BooleanField(default=True)
+    warmup = models.BooleanField(default=True)
+    warmup_start = models.PositiveIntegerField(default=15)
+    warmup_step = models.PositiveIntegerField(default=5)
+    current_limit = models.PositiveIntegerField(null=True, blank=True, help_text="Today's limit set by the protection.")
+    paused_until = models.DateTimeField(null=True, blank=True)
+    pause_reason = models.CharField(max_length=500, blank=True, default="")
+    last_adjust_date = models.DateField(null=True, blank=True)
+    last_cut_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         verbose_name = verbose_name_plural = "Settings"
@@ -81,6 +92,7 @@ class Contact(models.Model):
     extra = models.JSONField(default=dict, blank=True, help_text="Other CSV columns, usable as {{column}} fields.")
     lists = models.ManyToManyField(ContactList, related_name="contacts", blank=True)
     unsubscribed = models.BooleanField(default=False)
+    bounced = models.BooleanField(default=False, help_text="An email to this address bounced; never email it again.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -153,7 +165,7 @@ class Campaign(models.Model):
 
     def recipients(self):
         qs = self.contact_list.contacts.all() if self.contact_list_id else Contact.objects.all()
-        return qs.filter(unsubscribed=False)
+        return qs.filter(unsubscribed=False, bounced=False)
 
     def counts(self):
         rows = self.messages.values("status").annotate(n=models.Count("id"))
@@ -241,6 +253,24 @@ class Reply(models.Model):
 
     def __str__(self):
         return f"{self.from_email}: {self.subject}"
+
+
+class SafetyEvent(models.Model):
+    """Something the automatic protection noticed or did (shown in Settings)."""
+    LEVEL_INFO = "info"
+    LEVEL_WARNING = "warning"
+    LEVEL_CRITICAL = "critical"
+    LEVEL_CHOICES = [(LEVEL_INFO, "Info"), (LEVEL_WARNING, "Warning"), (LEVEL_CRITICAL, "Critical")]
+
+    level = models.CharField(max_length=8, choices=LEVEL_CHOICES, default=LEVEL_INFO)
+    text = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.text
 
 
 def sent_today_count(now=None):

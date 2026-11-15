@@ -8,7 +8,7 @@ import re
 
 from django.utils import timezone
 
-from . import gmail
+from . import gmail, safety
 from .models import GmailAccount, Message, Reply
 
 log = logging.getLogger(__name__)
@@ -40,12 +40,13 @@ def sync_replies(now=None, list_ids=gmail.list_message_ids, fetch=gmail.get_mess
             if data["from_email"] == account.email.lower():
                 continue  # your own reply from Gmail: not an answer from them
             kind = Reply.KIND_BOUNCE if is_bounce(data["from_email"], data["subject"]) else Reply.KIND_REPLY
-            Reply.objects.create(
+            reply = Reply.objects.create(
                 message_id=threads[thread_id], gmail_id=message_id, kind=kind,
                 from_email=data["from_email"][:320], from_name=data["from_name"][:200],
                 subject=data["subject"][:500], snippet=data["snippet"], body=data["body"],
                 received_at=data["received_at"],
             )
+            safety.handle_reply(reply)  # bounce → never email again; "unsubscribe" → unsubscribed
             if kind == Reply.KIND_REPLY:
                 Message.objects.filter(pk=threads[thread_id], replied_at__isnull=True).update(replied_at=data["received_at"])
             added += 1

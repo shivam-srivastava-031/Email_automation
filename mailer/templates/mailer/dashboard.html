@@ -37,8 +37,8 @@
   <section class="stats" aria-label="Today">
     <div class="stat">
       <div class="label">Sent today</div>
-      <div class="value">{{ sent_today }}<span class="muted" style="font-size:15px;font-weight:500"> / {{ app.daily_limit }}</span></div>
-      <div class="sub">Daily limit, set in Settings</div>
+      <div class="value">{{ sent_today }}<span class="muted" style="font-size:15px;font-weight:500"> / {{ limit }}</span></div>
+      <div class="sub">{% if limit < app.daily_limit %}Protection limit today (max {{ app.daily_limit }}){% else %}Daily limit, set in Settings{% endif %}</div>
     </div>
     <a class="stat" href="{% url 'campaign_list' %}">
       <div class="label">To review</div>

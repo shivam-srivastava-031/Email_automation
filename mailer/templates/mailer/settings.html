@@ -51,7 +51,30 @@
         </div>
         <div class="field"><label for="{{ form.product_description.id_for_label }}">{{ form.product_description.label }}</label>{{ form.product_description }}<div class="help">The AI uses this to write about your offer.</div></div>
         <div class="field"><label for="{{ form.signature.id_for_label }}">Signature</label>{{ form.signature }}<div class="help">Added under every email.</div></div>
-        <div class="field" style="max-width:220px"><label for="{{ form.daily_limit.id_for_label }}">{{ form.daily_limit.label }}</label>{{ form.daily_limit }}{{ form.daily_limit.errors }}<div class="help">{{ form.daily_limit.help_text }}</div></div>
+        <h2 style="margin:22px 0 4px">Sending limits &amp; protection</h2>
+        <p class="hint" style="margin-bottom:14px">Keeps Gmail from flagging your account: starts slow, lowers the limit when emails bounce or Gmail pushes back, and pauses if it gets serious.</p>
+        <div class="grid2">
+          <div class="field"><label for="{{ form.daily_limit.id_for_label }}">{{ form.daily_limit.label }}</label>{{ form.daily_limit }}{{ form.daily_limit.errors }}<div class="help">{{ form.daily_limit.help_text }}</div></div>
+          <div class="field">
+            <span class="label">Today’s limit</span>
+            <div style="min-height:42px;display:flex;align-items:center;gap:8px"><b style="font-size:20px">{{ limit }}</b><span class="small muted">{% if paused %}paused{% elif limit < app.daily_limit %}set by the protection{% else %}= your maximum{% endif %}</span></div>
+          </div>
+        </div>
+        <div class="field">
+          <label class="check" for="{{ form.auto_protect.id_for_label }}">{{ form.auto_protect }}
+            <span>{{ form.auto_protect.label }}<span class="hint" style="display:block;font-weight:400">Halves the limit when 5% of recent emails bounce; pauses until tomorrow at 10% or when Gmail reports a sending limit; pauses if Gmail access is lost.</span></span>
+          </label>
+        </div>
+        <div class="field">
+          <label class="check" for="{{ form.warmup.id_for_label }}">{{ form.warmup }}
+            <span>{{ form.warmup.label }}<span class="hint" style="display:block;font-weight:400">Start low and add a few emails each day that goes well, up to your maximum. Recommended for a personal Gmail.</span></span>
+          </label>
+        </div>
+        <div class="grid2">
+          <div class="field"><label for="{{ form.warmup_start.id_for_label }}">{{ form.warmup_start.label }}</label>{{ form.warmup_start }}{{ form.warmup_start.errors }}</div>
+          <div class="field"><label for="{{ form.warmup_step.id_for_label }}">{{ form.warmup_step.label }}</label>{{ form.warmup_step }}{{ form.warmup_step.errors }}</div>
+        </div>
+        <p class="small muted" style="margin-bottom:14px">Always on, whatever you choose: bounced addresses are never emailed again, and anyone who replies “unsubscribe”, “remove me” or “not interested” is unsubscribed.</p>
         <button class="btn btn-primary" type="submit">Save settings</button>
       </form>
     </div>
@@ -65,6 +88,36 @@
           <li>{% if ai_ready %}<span class="chip chip-ok">Ready</span>{% else %}<span class="chip chip-idle">Off</span>{% endif %} AI writing (Gemini)</li>
         </ul>
         {% if not ai_ready %}<p class="small muted" style="margin-top:8px">Add <code>GEMINI_API_KEY</code> to <code>.env</code> to let the AI write emails. Templates work without it.</p>{% endif %}
+      </section>
+      <section class="card card-pad">
+        <div class="row spread" style="margin-bottom:10px">
+          <h2>Account health</h2>
+          {% if paused %}<span class="chip chip-failed">Paused</span>{% elif app.auto_protect %}<span class="chip chip-ok">Protected</span>{% else %}<span class="chip chip-idle">Protection off</span>{% endif %}
+        </div>
+        {% if paused %}
+          <div class="alert alert-error" style="margin-bottom:10px">{{ app.pause_reason }}{% if app.paused_until %}<br><span class="small">Until {{ app.paused_until|date:"M j, H:i" }}</span>{% endif %}</div>
+          <form method="post" action="{% url 'safety_resume' %}" style="margin-bottom:12px" onsubmit="return confirm('Resume sending now? Only do this once the cause is fixed.')">{% csrf_token %}
+            <button class="btn btn-outline btn-sm" type="submit">Resume now</button>
+          </form>
+        {% endif %}
+        <ul style="list-style:none;margin:0 0 6px;padding:0;line-height:1.9" class="small">
+          <li>Bounces, last 3 days: <b {% if bounce_pct >= 5 %}style="color:var(--red)"{% endif %}>{{ bounced_recent }} of {{ sent_recent }}</b>{% if sent_recent %} ({{ bounce_pct }}%){% endif %}</li>
+          <li>Never emailed again (bounced): <b>{{ bounced_contacts }}</b></li>
+          <li>Unsubscribed: <b>{{ unsub_contacts }}</b></li>
+        </ul>
+        <h3 style="margin:12px 0 6px;font-size:13px">Safety log</h3>
+        {% if events %}
+          <ul style="list-style:none;margin:0;padding:0" class="small">
+          {% for e in events %}
+            <li style="padding:6px 0;border-top:1px solid var(--line)">
+              <span class="chip {% if e.level == 'critical' %}chip-failed{% elif e.level == 'warning' %}chip-paused{% else %}chip-idle{% endif %}" style="font-size:11px">{{ e.get_level_display }}</span>
+              <span class="muted">{{ e.created_at|date:"M j, H:i" }}</span><br>{{ e.text }}
+            </li>
+          {% endfor %}
+          </ul>
+        {% else %}
+          <p class="small muted">Nothing yet. Changes to the limit, pauses, bounces and unsubscribes are recorded here.</p>
+        {% endif %}
       </section>
       <section class="card card-pad">
         <h2 style="margin-bottom:6px">Sending pace</h2>

@@ -290,6 +290,130 @@ class GmailParsingTests(TestCase):
         self.assertEqual(gmail._plain_text(html_only), "Line one\nLine two")
 
 
+class SafetyTests(TestCase):
+    def setUp(self):
+        from . import safety
+        self.safety = safety
+        connect_gmail()
+        self.app = AppSettings.objects.create(pk=1, daily_limit=40, current_limit=20)
+        self.contacts = [Contact.objects.create(email=f"p{i}@example.com") for i in range(3)]
+        self.campaign = Campaign.objects.create(name="C", subject="s", body="b", review_first=False)
+        svc.start(self.campaign)
+
+    def make_sent(self, n, when=None, bounced=0):
+        from .models import Reply
+        when = when or timezone.now() - timedelta(hours=1)
+        msgs = []
+        for i in range(n):
+            c = Contact.objects.create(email=f"s{i}-{when.timestamp()}@example.com")
+            m = Message.objects.create(campaign=self.campaign, contact=c, status=Message.STATUS_SENT, subject="s", body="b",
+                                       sent_at=when, gmail_thread_id=f"t{i}-{when.timestamp()}")
+            msgs.append(m)
+        for m in msgs[:bounced]:
+            Reply.objects.create(message=m, gmail_id=f"b-{m.pk}", kind=Reply.KIND_BOUNCE, received_at=when)
+        return msgs
+
+    def test_classify_http_error(self):
+        self.assertTrue(gmail.classify_http_error(429, "")["rate_limited"])
+        self.assertTrue(gmail.classify_http_error(403, "User-rate limit exceeded: userRateLimitExceeded")["rate_limited"])
+        self.assertFalse(gmail.classify_http_error(403, "insufficient permissions")["rate_limited"])
+        self.assertTrue(gmail.classify_http_error(401, "")["auth"])
+        self.assertTrue(gmail.classify_http_error(400, "invalid to")["permanent"])
+
+    def test_rate_limit_halves_limit_and_pauses_until_morning(self):
+        def limited(account, mime):
+            raise gmail.GmailError("quota", rate_limited=True)
+        now = timezone.now()
+        msg = svc.send_next(now=now, sender=limited)
+        self.assertEqual((msg.status, msg.attempts), (Message.STATUS_APPROVED, 0))  # not the email's fault
+        app = AppSettings.load()
+        self.assertEqual(app.current_limit, 10)
+        self.assertEqual(app.paused_until, self.safety.next_morning(now))
+        self.assertIsNone(svc.send_next(now=now + timedelta(hours=1), sender=lambda a, m: "x"))  # paused
+        self.safety.resume()
+        self.assertEqual(svc.send_next(now=now + timedelta(hours=1), sender=lambda a, m: "x").status, Message.STATUS_SENT)
+
+    def test_lost_access_pauses_until_resumed(self):
+        def revoked(account, mime):
+            raise gmail.GmailError("revoked", permanent=True, auth=True)
+        svc.send_next(sender=revoked)
+        self.assertTrue(self.safety.is_paused(now=timezone.now() + timedelta(days=30)))
+        self.assertIn("Reconnect Gmail", AppSettings.load().pause_reason)
+
+    def test_bounces_cut_then_pause(self):
+        self.make_sent(20, bounced=1)                       # 5%
+        self.assertEqual(self.safety.check_bounces(), "cut")
+        self.assertEqual(AppSettings.load().current_limit, 10)
+        self.assertIsNone(self.safety.check_bounces())       # only one cut a day
+        self.make_sent(20, bounced=3)                        # 4 of 40 = 10%
+        self.assertEqual(self.safety.check_bounces(), "paused")
+        self.assertTrue(self.safety.is_paused())
+        self.assertEqual(AppSettings.load().current_limit, 10)  # not cut twice in a day
+
+    def test_small_samples_are_ignored(self):
+        self.make_sent(10, bounced=5)
+        self.assertIsNone(self.safety.check_bounces())
+
+    def test_bounce_and_opt_out_replies_stop_future_emails(self):
+        from .models import Reply
+        sent = self.make_sent(2)
+        jane = sent[0].contact
+        other = Campaign.objects.create(name="Next", subject="s", body="b")
+        queued = Message.objects.create(campaign=other, contact=jane, status=Message.STATUS_APPROVED, subject="s", body="b")
+        bounce = Reply.objects.create(message=sent[0], gmail_id="b1", kind=Reply.KIND_BOUNCE, received_at=timezone.now())
+        self.assertEqual(self.safety.handle_reply(bounce), "bounced")
+        jane.refresh_from_db(); queued.refresh_from_db()
+        self.assertTrue(jane.bounced)
+        self.assertEqual(queued.status, Message.STATUS_SKIPPED)
+        self.assertNotIn(jane, other.recipients())
+
+        no = Reply.objects.create(message=sent[1], gmail_id="r1", body="Thanks, but please remove me from your list.",
+                                  received_at=timezone.now())
+        self.assertEqual(self.safety.handle_reply(no), "unsubscribed")
+        self.assertTrue(Contact.objects.get(pk=sent[1].contact_id).unsubscribed)
+        yes = Reply.objects.create(message=sent[1], gmail_id="r2", body="Sounds interesting, call me tomorrow?",
+                                   received_at=timezone.now())
+        self.assertIsNone(self.safety.handle_reply(yes))
+
+    def test_warmup_starts_low_and_grows_after_healthy_days(self):
+        from .models import SafetyEvent
+        AppSettings.objects.filter(pk=1).update(current_limit=None, daily_limit=40, warmup_start=15, warmup_step=5)
+        tz = timezone.get_current_timezone()
+        today_10 = timezone.make_aware(timezone.datetime.combine(timezone.localdate(), timezone.datetime.min.time()), tz) + timedelta(hours=10)
+        self.assertEqual(self.safety.daily_adjust(today_10), "started")
+        self.assertEqual(self.safety.effective_limit(), 15)
+        self.assertIsNone(self.safety.daily_adjust(today_10 + timedelta(hours=1)))  # once a day
+
+        tomorrow = today_10 + timedelta(days=1)
+        self.make_sent(10, when=today_10)                   # a clean day
+        SafetyEvent.objects.all().delete()
+        self.assertEqual(self.safety.daily_adjust(tomorrow), "raised")
+        self.assertEqual(self.safety.effective_limit(), 20)
+
+        self.make_sent(10, when=tomorrow)
+        self.safety.event(SafetyEvent.LEVEL_WARNING, "something went wrong")
+        SafetyEvent.objects.update(created_at=tomorrow + timedelta(hours=8))  # within the day being judged
+        self.assertIsNone(self.safety.daily_adjust(tomorrow + timedelta(days=1)))  # not after trouble
+        self.assertEqual(self.safety.effective_limit(), 20)
+
+    def test_never_above_maximum_and_off_switch(self):
+        AppSettings.objects.filter(pk=1).update(current_limit=100)
+        self.assertEqual(self.safety.effective_limit(), 40)
+        AppSettings.objects.filter(pk=1).update(auto_protect=False, current_limit=5)
+        self.assertEqual(self.safety.effective_limit(), 40)
+        self.safety.on_send_error(gmail.GmailError("quota", rate_limited=True))
+        self.assertFalse(self.safety.is_paused())
+
+    def test_lowering_maximum_in_settings_lowers_todays_limit(self):
+        from .forms import SettingsForm
+        form = SettingsForm({"sender_name": "", "company_name": "", "product_description": "", "signature": "",
+                             "daily_limit": 8, "auto_protect": "on", "warmup": "on", "warmup_start": 15, "warmup_step": 5},
+                            instance=AppSettings.load())
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.assertEqual(AppSettings.load().current_limit, 8)
+
+
 class ViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("me", password="pw-for-tests")
@@ -354,6 +478,17 @@ class ViewTests(TestCase):
         GmailAccount.objects.create(pk=1, email="sender@example.com", refresh_token="rt",
                                     scopes="https://www.googleapis.com/auth/gmail.send")
         self.assertContains(self.client.get(reverse("inbox")), "Reconnect Gmail")
+
+    def test_pause_banner_and_resume(self):
+        from . import safety
+        self.client.force_login(self.user)
+        safety.pause(AppSettings.load(), timezone.now() + timedelta(hours=5), "Gmail rate limit reached.")
+        r = self.client.get(reverse("settings"))
+        self.assertContains(r, "Sending is paused by the automatic protection")
+        self.assertContains(r, "Gmail rate limit reached.")
+        self.client.post(reverse("safety_resume"))
+        self.assertFalse(safety.is_paused())
+        self.assertNotContains(self.client.get(reverse("dashboard")), "Sending is paused")
 
     def test_gmail_connect_needs_config(self):
         self.client.force_login(self.user)
