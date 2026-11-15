@@ -131,7 +131,13 @@ def followup_candidates(campaign, now=None, due_only=True):
 
 @transaction.atomic
 def schedule_followups(now=None):
-    """Queue the next follow-up for every email that got no reply in time. Returns how many."""
+    """Queue the next follow-up for every email that got no reply in time. Returns how many.
+
+    Never without permission to read replies: we could not tell who already answered.
+    """
+    account = GmailAccount.current()
+    if account is None or not account.can_read_replies:
+        return 0
     created = 0
     for campaign in Campaign.objects.filter(status=Campaign.STATUS_RUNNING, followups=True):
         for prev in followup_candidates(campaign, now):

@@ -83,7 +83,7 @@
 
         <section class="card card-pad">
           <h2>Follow-ups</h2>
-          <p class="hint" style="margin-bottom:14px">Sent in the same Gmail conversation (“Re: …”) only if they haven’t replied. Any real reply, bounce or unsubscribe stops them; out-of-office replies don’t.</p>
+          <p class="hint" style="margin-bottom:14px">Sent in the same Gmail conversation (“Re: …”) only if they haven’t replied. Any real reply, bounce or unsubscribe stops them; out-of-office replies don’t. Follow-ups only run while the app may read replies (Settings › Gmail).</p>
           <label class="check field" for="{{ form.followups.id_for_label }}">{{ form.followups }}<span>{{ form.followups.label }}</span></label>
           <div class="grid2">
             <div class="field"><label for="{{ form.followup_days.id_for_label }}">{{ form.followup_days.label }}</label>{{ form.followup_days }}{{ form.followup_days.errors }}</div>

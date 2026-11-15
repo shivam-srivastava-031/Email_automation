@@ -603,6 +603,13 @@ class AutomationTests(TestCase):
         self.campaign.refresh_from_db()
         self.assertEqual(self.campaign.status, Campaign.STATUS_DONE)
 
+    def test_no_followups_without_permission_to_read_replies(self):
+        t0 = timezone.now()
+        svc.start(self.campaign)
+        svc.send_next(now=t0, sender=self.send)
+        GmailAccount.objects.filter(pk=1).update(scopes="https://www.googleapis.com/auth/gmail.send")
+        self.assertEqual(svc.schedule_followups(t0 + timedelta(days=5)), 0)
+
     def test_campaign_not_done_while_a_followup_may_come(self):
         svc.start(self.campaign)
         svc.send_next(sender=self.send)
