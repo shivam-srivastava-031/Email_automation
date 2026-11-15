@@ -2,7 +2,8 @@
 
 A small standalone app that sends personal emails to your contacts from your
 Gmail account. No CRM and no LinkedIn: contacts come from a CSV upload (or are
-typed in) and live in a local SQLite database.
+typed in) and live in your local PostgreSQL database (or a SQLite file if you
+don't configure one).
 
 - **Contacts:** import a CSV (needs an `email` column; name, company and title are
   picked up automatically, any other column becomes a `{{column}}` field) and
@@ -23,14 +24,19 @@ python -m venv .venv
 .venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 copy .env.example .env            # macOS/Linux: cp .env.example .env
+```
+
+Fill in `.env` (below), create the database, then:
+
+```bash
+psql -U postgres -c "CREATE DATABASE email_automation;"
 python manage.py migrate
 python manage.py createsuperuser  # your login for the app
 ```
 
-Fill in `.env`:
-
 | Setting | Where to get it |
 |---|---|
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Your local PostgreSQL (defaults: `email_automation`, `postgres`, localhost, 5432). Leave `DB_NAME` empty to use a SQLite file instead. |
 | `DJANGO_SECRET_KEY` | Any long random string. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | See "Connect Gmail" below. |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey). Only needed for AI-written emails. |
@@ -42,7 +48,9 @@ Fill in `.env`:
 2. **OAuth consent screen:** choose *External*, fill in an app name, and add the
    Gmail address you will send from under **Test users**.
 3. **Credentials > Create credentials > OAuth client ID**, type **Web application**,
-   with the authorised redirect URI `http://localhost:8000/gmail/callback/`.
+   with the authorised redirect URI `http://localhost:5000/gmail/callback/`.
+   Open the app at `http://localhost:5000` (not `127.0.0.1`) when you connect, so the
+   sign-in returns to the same address.
 4. Copy the client ID and secret into `.env`.
 5. Start the app, open **Settings > Connect Gmail**, and sign in with that address.
 
@@ -54,7 +62,7 @@ cannot read your inbox. Disconnecting in Settings also revokes the access at Goo
 Two terminals, both with the virtual environment active:
 
 ```bash
-python manage.py runserver        # the app: http://localhost:8000
+python manage.py runserver        # the app: http://localhost:5000
 python manage.py run_worker       # writes AI drafts and sends queued emails
 ```
 
@@ -74,5 +82,5 @@ python manage.py test mailer
   flag the account.
 - **Cold email rules:** only email people who can reasonably expect it, and honour
   unsubscribe requests (mark the contact *Unsubscribed* on the Contacts page).
-- **Your data** (contacts, tokens) stays in `db.sqlite3` on your machine. Keep
-  `.env` and `db.sqlite3` private; both are git-ignored.
+- **Your data** (contacts, Gmail tokens) stays in your local database. Keep `.env`
+  (and `db.sqlite3`, if you use it) private; both are git-ignored.
