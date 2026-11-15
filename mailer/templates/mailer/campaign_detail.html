@@ -1,0 +1,142 @@
+{% extends "mailer/base.html" %}
+{% block title %}{{ campaign.name }} · Email automation{% endblock %}
+{% block content %}
+<div class="stack">
+  <div class="row spread">
+    <div class="grow">
+      <a href="{% url 'campaign_list' %}" class="small">← Campaigns</a>
+      <div class="row" style="margin-top:4px">
+        <h1>{{ campaign.name }}</h1>
+        <span class="chip chip-{{ campaign.status }}">{{ campaign.get_status_display }}</span>
+      </div>
+      <p class="hint">{{ campaign.get_writer_display }} · to {{ campaign.contact_list.name|default:"all contacts" }}{% if campaign.review_first %} · you review each email{% endif %}</p>
+    </div>
+    <div class="row">
+      <a class="btn btn-ghost" href="{% url 'campaign_edit' campaign.pk %}">Edit</a>
+      {% if campaign.status == 'draft' %}
+        <form method="post" action="{% url 'campaign_start' campaign.pk %}" class="inline">{% csrf_token %}<button class="btn btn-primary" type="submit">Start campaign</button></form>
+      {% elif campaign.status == 'running' %}
+        <form method="post" action="{% url 'campaign_pause' campaign.pk %}" class="inline">{% csrf_token %}<button class="btn btn-outline" type="submit">Pause</button></form>
+      {% else %}
+        <form method="post" action="{% url 'campaign_resume' campaign.pk %}" class="inline">{% csrf_token %}<button class="btn btn-outline" type="submit">Resume</button></form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if campaign.status == 'running' and not account %}
+    <div class="alert alert-warning">Gmail is not connected, so nothing can be sent. <a href="{% url 'settings' %}">Connect Gmail</a>.</div>
+  {% endif %}
+  {% if campaign.status == 'running' and sent_today >= app.daily_limit %}
+    <div class="alert alert-info">Today’s limit of {{ app.daily_limit }} emails is reached. Sending continues tomorrow.</div>
+  {% endif %}
+
+  <section class="card card-pad">
+    <div class="row spread" style="margin-bottom:10px">
+      <span style="font-weight:600">{{ stats.sent }} of {{ stats.total }} sent</span>
+      <span class="small muted">
+        {% if stats.pending %}{{ stats.pending }} being written · {% endif %}{{ stats.draft }} to review · {{ stats.approved }} queued{% if stats.failed %} · {{ stats.failed }} failed{% endif %}{% if stats.skipped %} · {{ stats.skipped }} skipped{% endif %}
+      </span>
+    </div>
+    <div class="progress" role="progressbar" aria-valuenow="{{ progress }}" aria-valuemin="0" aria-valuemax="100" aria-label="Sent"><span style="width:{{ progress }}%"></span></div>
+    {% if campaign.status == 'draft' %}<p class="small muted" style="margin-top:10px">Not started. Starting creates one email per contact{% if campaign.review_first %} for you to review{% endif %}.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <nav class="filters grow" aria-label="Filter emails">
+        {% for f in filters %}<a href="?f={{ f.key }}" class="{% if f.active %}active{% endif %}" {% if f.active %}aria-current="page"{% endif %}>{{ f.label }} · {{ f.count }}</a>{% endfor %}
+      </nav>
+      {% if current == 'review' and stats.draft %}
+      <form method="post" action="{% url 'campaign_approve_all' campaign.pk %}" class="inline" onsubmit="return confirm('Approve all {{ stats.draft }} drafts? They will be sent one by one.')">{% csrf_token %}
+        <button class="btn btn-primary btn-sm" type="submit">Approve all {{ stats.draft }}</button>
+      </form>
+      {% endif %}
+    </div>
+
+    {% if page.object_list %}
+      {% if current == 'review' %}
+        {% for m in page %}
+        <form method="post" action="{% url 'message_action' m.pk %}" style="padding:18px 20px;border-bottom:1px solid var(--line)">{% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <div class="row" style="margin-bottom:10px">
+            <span class="avatar" aria-hidden="true">{{ m.contact.first_name|first|upper|default:"?" }}{{ m.contact.last_name|first|upper }}</span>
+            <div class="grow">
+              <div style="font-weight:600">{{ m.contact.full_name|default:m.contact.email }}</div>
+              <div class="small muted">{{ m.contact.email }}{% if m.contact.company %} · {{ m.contact.company }}{% endif %}{% if m.contact.role %} · {{ m.contact.role }}{% endif %}</div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="s{{ m.pk }}">Subject</label>
+            <input type="text" id="s{{ m.pk }}" name="subject" value="{{ m.subject }}" maxlength="300">
+          </div>
+          <div class="field">
+            <label for="b{{ m.pk }}">Message</label>
+            <textarea id="b{{ m.pk }}" name="body" rows="7">{{ m.body }}</textarea>
+            <div class="help">{% if campaign.cta_text %}The “{{ campaign.cta_text }}” button, {% endif %}your signature{% if campaign.attachments.exists %} and the files{% endif %} are added when it sends.</div>
+          </div>
+          <div class="row">
+            <button class="btn btn-primary btn-sm" type="submit" name="action" value="approve">Approve</button>
+            <button class="btn btn-outline btn-sm" type="submit" name="action" value="save">Save</button>
+            <button class="btn btn-ghost btn-sm" type="submit" name="action" value="skip">Skip</button>
+          </div>
+        </form>
+        {% endfor %}
+      {% else %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>To</th><th>Subject</th><th>Status</th><th>When</th><th></th></tr></thead>
+            <tbody>
+            {% for m in page %}
+              <tr>
+                <td><div style="font-weight:600">{{ m.contact.full_name|default:m.contact.email }}</div><div class="small muted">{{ m.contact.email }}</div></td>
+                <td style="min-width:220px">
+                  {% if m.subject %}
+                  <details>
+                    <summary>{{ m.subject }} <span class="small" style="color:var(--blue-dark)">· view</span></summary>
+                    <div class="email-box" style="margin-top:8px"><div class="preview-body">{{ m.preview_html|safe }}</div></div>
+                  </details>
+                  {% else %}<span class="muted">Being written…</span>{% endif %}
+                  {% if m.error %}<div class="small" style="color:var(--red);margin-top:4px">{{ m.error }}</div>{% endif %}
+                </td>
+                <td><span class="chip chip-{{ m.status }}">{{ m.get_status_display }}</span></td>
+                <td class="small muted" style="white-space:nowrap">{% if m.sent_at %}{{ m.sent_at|date:"M j, H:i" }}{% else %}{{ m.updated_at|date:"M j, H:i" }}{% endif %}</td>
+                <td style="text-align:right;white-space:nowrap">
+                  {% if m.status == 'failed' %}
+                  <form method="post" action="{% url 'message_action' m.pk %}" class="inline">{% csrf_token %}
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="btn btn-outline btn-sm" type="submit" name="action" value="retry">Retry</button>
+                  </form>
+                  {% endif %}
+                  {% if m.status == 'approved' or m.status == 'pending' or m.status == 'failed' %}
+                  <form method="post" action="{% url 'message_action' m.pk %}" class="inline">{% csrf_token %}
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="btn btn-ghost btn-sm" type="submit" name="action" value="skip">Skip</button>
+                  </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      {% if page.has_other_pages %}
+      <div class="card-foot row spread small">
+        <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        <span class="row">
+          {% if page.has_previous %}<a class="btn btn-outline btn-sm" href="?f={{ current }}&page={{ page.previous_page_number }}">Previous</a>{% endif %}
+          {% if page.has_next %}<a class="btn btn-outline btn-sm" href="?f={{ current }}&page={{ page.next_page_number }}">Next</a>{% endif %}
+        </span>
+      </div>
+      {% endif %}
+    {% else %}
+      <div class="empty">
+        {% if current == 'review' %}<h3>Nothing to review</h3><p>{% if stats.pending %}The AI is still writing. This page updates when you reload it.{% else %}All caught up.{% endif %}</p>
+        {% elif current == 'queued' %}<h3>Nothing queued</h3><p>Approved emails wait here until the worker sends them.</p>
+        {% elif current == 'sent' %}<h3>Nothing sent yet</h3><p>{% if campaign.status == 'running' %}Keep the worker running: <code>python manage.py run_worker</code>{% else %}Start the campaign to begin.{% endif %}</p>
+        {% else %}<h3>No problems</h3><p>Failed and skipped emails show up here.</p>{% endif %}
+      </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

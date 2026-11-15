@@ -1,0 +1,49 @@
+{% extends "mailer/base.html" %}
+{% block title %}Campaigns · Email automation{% endblock %}
+{% block content %}
+<div class="stack">
+  <div class="row spread">
+    <div>
+      <h1>Campaigns</h1>
+      <p class="hint">Each campaign sends one email to every contact in a list.</p>
+    </div>
+    <a href="{% url 'campaign_new' %}" class="btn btn-primary">New campaign</a>
+  </div>
+
+  <section class="card">
+    {% if items %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Campaign</th><th>Sends to</th><th>Status</th><th>Progress</th><th>To review</th><th></th></tr></thead>
+        <tbody>
+        {% for c in items %}
+          <tr>
+            <td><a href="{% url 'campaign_detail' c.pk %}" style="font-weight:600">{{ c.name }}</a><div class="small muted">{{ c.get_writer_display }}{% if c.review_first %} · review first{% endif %}</div></td>
+            <td>{{ c.contact_list.name|default:"All contacts" }}</td>
+            <td><span class="chip chip-{{ c.status }}">{{ c.get_status_display }}</span></td>
+            <td style="min-width:160px">
+              {% if c.stats.total %}
+              <div class="progress" aria-hidden="true"><span style="width:{% widthratio c.stats.sent c.stats.total 100 %}%"></span></div>
+              <div class="small muted" style="margin-top:4px">{{ c.stats.sent }} of {{ c.stats.total }} sent{% if c.stats.failed %} · {{ c.stats.failed }} failed{% endif %}</div>
+              {% else %}<span class="small muted">Not started</span>{% endif %}
+            </td>
+            <td>{% if c.stats.draft %}<span class="chip chip-draft">{{ c.stats.draft }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <a class="btn btn-ghost btn-sm" href="{% url 'campaign_edit' c.pk %}">Edit</a>
+              <a class="btn btn-outline btn-sm" href="{% url 'campaign_detail' c.pk %}">Open</a>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      <h3>No campaigns yet</h3>
+      <p style="margin-bottom:14px">Create one to start emailing your contacts.</p>
+      <a href="{% url 'campaign_new' %}" class="btn btn-primary">New campaign</a>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

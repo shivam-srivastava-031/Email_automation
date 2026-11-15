@@ -1,0 +1,228 @@
+{% extends "mailer/base.html" %}
+{% block title %}{% if campaign %}{{ campaign.name }}{% else %}New campaign{% endif %} · Email automation{% endblock %}
+{% block content %}
+<div class="stack">
+  <div class="row spread">
+    <div>
+      <a href="{% if campaign %}{% url 'campaign_detail' campaign.pk %}{% else %}{% url 'campaign_list' %}{% endif %}" class="small">← Back</a>
+      <h1 style="margin-top:4px">{% if campaign %}Edit “{{ campaign.name }}”{% else %}New campaign{% endif %}</h1>
+    </div>
+    {% if campaign %}<span class="chip chip-{{ campaign.status }}">{{ campaign.get_status_display }}</span>{% endif %}
+  </div>
+
+  {% if campaign and campaign.messages.exists %}
+  <div class="alert alert-info">This campaign has started. Changes apply to emails not yet written; emails already written keep their text (edit those in the campaign’s review list).</div>
+  {% endif %}
+
+  <div class="cols">
+    <div class="col-main stack">
+      <form method="post" id="campaign-form" class="stack">{% csrf_token %}
+        {{ form.non_field_errors }}
+
+        <section class="card card-pad">
+          <h2 style="margin-bottom:14px">Basics</h2>
+          <div class="grid2">
+            <div class="field">
+              <label for="{{ form.name.id_for_label }}">Campaign name</label>{{ form.name }}{{ form.name.errors }}
+            </div>
+            <div class="field">
+              <label for="{{ form.contact_list.id_for_label }}">{{ form.contact_list.label }}</label>{{ form.contact_list }}
+              <div class="help">Unsubscribed contacts are always left out.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-pad">
+          <h2>What should the email say?</h2>
+          <p class="hint" style="margin-bottom:14px">Pick one.</p>
+          <div class="options" role="radiogroup" aria-label="Who writes the email">
+            <label class="option">
+              <input type="radio" name="writer" value="template" {% if form.writer.value != 'ai' %}checked{% endif %}>
+              <span class="title">Use my template</span>
+              <span class="desc">The same words for everyone, with their details filled in.</span>
+            </label>
+            <label class="option">
+              <input type="radio" name="writer" value="ai" {% if form.writer.value == 'ai' %}checked{% endif %}>
+              <span class="title">AI writes each email</span>
+              <span class="desc">A fresh email per person from their name, title and company{% if not ai_ready %} (needs GEMINI_API_KEY){% endif %}.</span>
+            </label>
+          </div>
+
+          <div id="ai-fields" style="margin-top:16px">
+            {% if not ai_ready %}<div class="alert alert-warning" style="margin-bottom:12px">The AI is not set up. Add <code>GEMINI_API_KEY</code> to your <code>.env</code> file and restart.</div>{% endif %}
+            <div class="field">
+              <label for="{{ form.ai_instructions.id_for_label }}">Tips for the AI <span class="muted" style="font-weight:400">(optional)</span></label>
+              {{ form.ai_instructions }}
+              <div class="help">The AI also uses “What you offer” from Settings.</div>
+            </div>
+          </div>
+
+          <div id="template-fields" style="margin-top:16px">
+            <div class="field">
+              <label for="{{ form.subject.id_for_label }}">Subject</label>{{ form.subject }}{{ form.subject.errors }}
+            </div>
+            <div class="field">
+              <label for="{{ form.body.id_for_label }}">Message</label>{{ form.body }}{{ form.body.errors }}
+              <div class="tags" aria-label="Insert a field">
+                <span class="small muted">Insert:</span>
+                {% for f in merge_fields %}<button type="button" class="tag" data-field="{{ f }}">{% templatetag openvariable %}{{ f }}{% templatetag closevariable %}</button>{% endfor %}
+              </div>
+            </div>
+          </div>
+          <p class="small muted">Your signature from Settings is added under every email.</p>
+        </section>
+
+        <section class="card card-pad">
+          <h2>Button <span class="muted" style="font-weight:400;font-size:13px">(optional)</span></h2>
+          <p class="hint" style="margin-bottom:14px">A button under the email, e.g. to book a call.</p>
+          <div class="grid2">
+            <div class="field"><label for="{{ form.cta_text.id_for_label }}">Button text</label>{{ form.cta_text }}{{ form.cta_text.errors }}</div>
+            <div class="field"><label for="{{ form.cta_url.id_for_label }}">Button link</label>{{ form.cta_url }}{{ form.cta_url.errors }}</div>
+          </div>
+        </section>
+
+        <section class="card card-pad">
+          <label class="check" for="{{ form.review_first.id_for_label }}">
+            {{ form.review_first }}
+            <span>{{ form.review_first.label }}<span class="hint" style="display:block;font-weight:400">Recommended. Turn off to send without checking each email.</span></span>
+          </label>
+        </section>
+
+        <div class="row">
+          <button class="btn btn-outline" type="submit">Save</button>
+          {% if campaign %}
+            <button class="btn btn-primary" type="submit" name="then" value="start">
+              {% if campaign.status == 'draft' %}Save and start{% else %}Save and add new contacts{% endif %}
+            </button>
+          {% else %}
+            <span class="small muted">Save first, then add files and start.</span>
+          {% endif %}
+        </div>
+      </form>
+
+      {% if campaign %}
+      <section class="card card-pad">
+        <h2>Files</h2>
+        <p class="hint" style="margin-bottom:14px">Attached to every email in this campaign (all files together under 20 MB).</p>
+        {% for a in campaign.attachments.all %}
+          <div class="row" style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px">
+            <span class="grow" style="font-weight:500">{{ a.name }} <span class="small muted">· {{ a.size|filesizeformat }}</span></span>
+            <form method="post" action="{% url 'attachment_delete' a.pk %}" class="inline">{% csrf_token %}
+              <button class="btn btn-ghost btn-sm" type="submit" aria-label="Remove {{ a.name }}">Remove</button>
+            </form>
+          </div>
+        {% endfor %}
+        <form method="post" action="{% url 'attachment_add' campaign.pk %}" enctype="multipart/form-data" class="row">{% csrf_token %}
+          <label for="id_attach" style="position:absolute;left:-9999px">File to attach</label>
+          <input type="file" name="file" id="id_attach" required class="grow">
+          <button class="btn btn-outline btn-sm" type="submit">Add file</button>
+        </form>
+      </section>
+
+      <form method="post" action="{% url 'campaign_delete' campaign.pk %}" onsubmit="return confirm('Delete this campaign and all its emails?')">{% csrf_token %}
+        <button class="btn btn-danger btn-sm" type="submit">Delete campaign</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <!-- Live preview -->
+    <aside class="col-side sticky" aria-label="Preview">
+      <div class="email-box">
+        <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--soft)">
+          <span class="grow small" style="font-weight:600;color:var(--body)">Preview</span>
+          <span class="small muted" id="pv-to">{% if sample %}To {{ sample.email }}{% else %}No contacts yet{% endif %}</span>
+        </div>
+        <div class="preview-subject" id="pv-subject">…</div>
+        <div class="preview-body" id="pv-body"><p class="muted">Start writing to see the email.</p></div>
+        <div id="pv-ai" style="padding:0 16px 16px;display:none">
+          <button type="button" class="btn btn-outline btn-sm" id="pv-ai-btn" {% if not ai_ready or not sample %}disabled{% endif %}>Write a sample with AI</button>
+          <p class="small muted" style="margin-top:8px">The AI writes a new email for every contact; this is one example for {% if sample %}{{ sample.first_name|default:sample.email }}{% else %}your first contact{% endif %}.</p>
+        </div>
+        <div id="pv-warn" class="alert alert-warning" style="margin:0 16px 16px;display:none"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const form = document.getElementById('campaign-form');
+  const aiBox = document.getElementById('ai-fields');
+  const tplBox = document.getElementById('template-fields');
+  const pvSubject = document.getElementById('pv-subject');
+  const pvBody = document.getElementById('pv-body');
+  const pvAi = document.getElementById('pv-ai');
+  const pvAiBtn = document.getElementById('pv-ai-btn');
+  const pvWarn = document.getElementById('pv-warn');
+  const body = form.querySelector('[name=body]');
+  const csrf = form.querySelector('[name=csrfmiddlewaretoken]').value;
+  const previewUrl = "{% url 'campaign_preview' %}";
+
+  const writer = () => (form.querySelector('[name=writer]:checked') || {}).value;
+
+  function showMode() {
+    const ai = writer() === 'ai';
+    aiBox.style.display = ai ? '' : 'none';
+    tplBox.style.display = ai ? 'none' : '';
+    pvAi.style.display = ai ? '' : 'none';
+  }
+
+  function setWarn(text) {
+    pvWarn.textContent = text || '';
+    pvWarn.style.display = text ? '' : 'none';
+  }
+
+  async function preview(aiSample) {
+    const data = new FormData(form);
+    if (aiSample) data.append('ai_sample', '1');
+    try {
+      const res = await fetch(previewUrl, { method: 'POST', body: data, headers: { 'X-CSRFToken': csrf } });
+      const out = await res.json();
+      if (out.error) { setWarn(out.error); return; }
+      if (out.ai) {
+        pvSubject.textContent = 'Written by the AI for each contact';
+        pvBody.innerHTML = '<p class="muted">Press “Write a sample with AI” to see an example.</p>';
+        setWarn('');
+        return;
+      }
+      pvSubject.textContent = out.subject || '(no subject)';
+      pvBody.innerHTML = out.html;  // built server-side with every value escaped
+      setWarn(out.unknown && out.unknown.length
+        ? 'These fields are not in your contacts and will be empty: ' + out.unknown.join(', ')
+        : '');
+    } catch (e) {
+      setWarn('Could not load the preview.');
+    }
+  }
+
+  let timer;
+  function schedule() { clearTimeout(timer); timer = setTimeout(() => preview(false), 400); }
+
+  form.addEventListener('input', schedule);
+  form.addEventListener('change', (e) => { if (e.target.name === 'writer') showMode(); schedule(); });
+
+  document.querySelectorAll('.tag[data-field]').forEach((btn) => btn.addEventListener('click', () => {
+    const tag = '{' + '{' + btn.dataset.field + '}' + '}';
+    const at = body.selectionStart ?? body.value.length;
+    body.value = body.value.slice(0, at) + tag + body.value.slice(body.selectionEnd ?? at);
+    body.focus();
+    body.selectionStart = body.selectionEnd = at + tag.length;
+    schedule();
+  }));
+
+  if (pvAiBtn) pvAiBtn.addEventListener('click', async () => {
+    pvAiBtn.disabled = true;
+    const label = pvAiBtn.textContent;
+    pvAiBtn.textContent = 'Writing…';
+    await preview(true);
+    pvAiBtn.textContent = label;
+    pvAiBtn.disabled = false;
+  });
+
+  showMode();
+  preview(false);
+})();
+</script>
+{% endblock %}
