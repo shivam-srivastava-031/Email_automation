@@ -33,7 +33,7 @@ from .views import AgentEmailSettingsViewSet, EmailAssetViewSet, EmailDecisionVi
 GEMINI = "email_orchestrator.engine.call_json"
 SEND = "email_orchestrator.sending.send_email"
 
-ADDRESS = "pratap@rebelcorp.in"
+ADDRESS = "jane.doe@prospect.example"
 
 
 def model_says(**kw):
@@ -44,7 +44,7 @@ def model_says(**kw):
         "recipient_email": ADDRESS,
         "asset_ids": [],
         "subject": "The details you asked for",
-        "body_markdown": "Thanks for the chat, Pratapraj.\n\nHere is the overview you asked for.",
+        "body_markdown": "Thanks for the chat, Jane.\n\nHere is the overview you asked for.",
         "reasons": ["asked for details over mail"],
         "evidence": ["Share the details over the mail will get back to you"],
         "hold_for_human": False,
@@ -78,9 +78,9 @@ class Base(TestCase):
         )
         self.partner = Partners.objects.create(user=self.owner, publisher=self.business, business_name="P")
         self.agent = LinkedInAgent.objects.create(
-            business_record=self.business, partner=self.partner, agent_name="Rayees",
-            company_name="Hodos", product_description="AI SDR for LinkedIn", meeting_link="https://cal.com/hodos",
-            company_website="https://hodos360.ai",
+            business_record=self.business, partner=self.partner, agent_name="Sam",
+            company_name="SenderCo", product_description="AI SDR for LinkedIn", meeting_link="https://booking.example/rep",
+            company_website="https://sender.example",
         )
         # The base agent uses its OWN mailbox and content. Team sharing (both
         # switches on by default) is exercised in test_admin_mailbox and
@@ -90,12 +90,12 @@ class Base(TestCase):
             cancel_window_minutes=0, use_team_mailbox=False, use_team_content=False,
         )
         self.contact = Contact.objects.create(
-            name="Pratapraj", last_name="Nadar", business=self.business, company_name="RebelCorp",
+            name="Jane", last_name="Doe", business=self.business, company_name="ProspectCo",
         )
         self.lead = promote_contact_to_lead(self.contact, business_id=self.business.id, partner_id=None)
         self.deal = advance_lead_to_deal(self.lead, business_id=self.business.id, partner_id=None)
         self.sdr_lead = SDRLead.objects.create(
-            agent=self.agent, person_linkedin_url="https://linkedin.com/in/pratap", full_name="Pratapraj Nadar",
+            agent=self.agent, person_linkedin_url="https://linkedin.com/in/jane-doe", full_name="Jane Doe",
             crm_record_id=self.contact.pk, sdr_status="replied",
         )
         self.conv = Conversation.objects.create(lead=self.sdr_lead, unipile_account_id="acc1")
@@ -117,7 +117,7 @@ class Base(TestCase):
                 conversation=self.conv, direction=direction, content=text, sent_at=timezone.now(),
             )
 
-    def asset_link(self, name="Demo video", url="https://loom.com/hodos-demo", description="3-minute walkthrough; send when asked for a demo or video"):
+    def asset_link(self, name="Demo video", url="https://video.example/demo", description="3-minute walkthrough; send when asked for a demo or video"):
         return EmailAsset.objects.create(
             agent=self.agent, business=self.business, kind=EmailAsset.KIND_LINK, name=name, url=url,
             description=description,
@@ -156,7 +156,7 @@ class ReadinessTests(Base):
 
 class TriggerTests(Base):
     def test_prefilter(self):
-        self.assertTrue(looks_like_email_ask("pratap@rebelcorp.in"))
+        self.assertTrue(looks_like_email_ask("jane.doe@prospect.example"))
         self.assertTrue(looks_like_email_ask("Share the details over the mail will get back to you"))
         self.assertTrue(looks_like_email_ask("can you send me the deck?"))
         self.assertFalse(looks_like_email_ask("Sure, sounds interesting. How does it work?"))
@@ -185,7 +185,7 @@ class TriggerTests(Base):
 
     def test_outbound_and_unrelated_messages_create_nothing(self):
         with patch("email_orchestrator.tasks.evaluate_decision"):
-            self.message("I will send it to pratap@rebelcorp.in", direction="outbound")
+            self.message("I will send it to jane.doe@prospect.example", direction="outbound")
             self.message("Interesting, tell me more")
         self.assertEqual(EmailDecision.objects.count(), 0)
 
@@ -199,20 +199,20 @@ class ValidateTests(Base):
             "assets": [{"id": 1, "kind": "link", "name": "Demo", "description": "", "tags": [],
                         "filename": "", "url": "https://loom.com/x", "subject": "", "body": "", "file_size": 0}],
             "settings": self.settings,
-            "booking_link": "https://cal.com/hodos",
-            "persona": {"website": "https://hodos360.ai"},
+            "booking_link": "https://booking.example/rep",
+            "persona": {"website": "https://sender.example"},
         }
         ctx.update(overrides)
         return ctx
 
     def test_recipient_must_be_typed_by_prospect(self):
-        clean = engine.validate(model_says(recipient_email="ceo@rebelcorp.in"), self.ctx())
+        clean = engine.validate(model_says(recipient_email="ceo@prospect.example"), self.ctx())
         self.assertIn("recipient_not_typed_by_prospect", clean["problems"])
         # falls back to the address they did type
         self.assertEqual(clean["recipient_email"], ADDRESS)
 
     def test_no_typed_address_means_no_recipient(self):
-        clean = engine.validate(model_says(recipient_email="ceo@rebelcorp.in"), self.ctx(allowed_recipients=[]))
+        clean = engine.validate(model_says(recipient_email="ceo@prospect.example"), self.ctx(allowed_recipients=[]))
         self.assertEqual(clean["recipient_email"], "")
 
     def test_evidence_must_be_verbatim(self):
@@ -226,12 +226,12 @@ class ValidateTests(Base):
         already carries (a second copy in the prose is clutter)."""
         clean = engine.validate(model_says(
             body_markdown=("See https://loom.com/x and https://evil.example.com/pricing "
-                           "and https://cal.com/hodos and https://hodos360.ai"),
+                           "and https://booking.example/rep and https://sender.example"),
         ), self.ctx())
         self.assertIn("unknown_links_removed", clean["problems"])
-        for gone in ("loom.com/x", "evil.example.com", "cal.com/hodos"):
+        for gone in ("loom.com/x", "evil.example.com", "booking.example/rep"):
             self.assertNotIn(gone, clean["body_html"])
-        self.assertIn("hodos360.ai", clean["body_html"])
+        self.assertIn("sender.example", clean["body_html"])
         self.assertNotIn("asset_ids", clean)
 
     def test_body_is_escaped_html_paragraphs(self):
@@ -261,7 +261,7 @@ class DecideTests(Base):
         self.assertEqual(row.recipient_email, ADDRESS)
         self.assertEqual(row.asset_ids, [link.pk])           # every attachment, not a pick
         self.assertIn("overview you asked for", row.body_html)
-        self.assertIn('href="https://cal.com/hodos"', row.body_html)  # the button
+        self.assertIn('href="https://booking.example/rep"', row.body_html)  # the button
         self.assertTrue(row.evidence)
         self.assertEqual(row.raw["from_email"], "owner@example.com")
 
@@ -332,12 +332,12 @@ class DecideTests(Base):
             engine.decide(row.pk)
         row.refresh_from_db()
         self.assertEqual(row.status, EmailDecision.STATUS_AWAITING_REVIEW)
-        self.assertEqual(row.subject, "The details for RebelCorp")
-        self.assertIn("Hi Pratapraj", row.body_html)
+        self.assertEqual(row.subject, "The details for ProspectCo")
+        self.assertIn("Hi Jane", row.body_html)
         self.assertNotIn("AI PROSE", row.body_html)
         self.assertNotIn("AI SUBJECT", row.subject)
         # merge tags the engine fills, and the model's asset choice is kept
-        self.assertIn("cal.com/hodos", row.body_html)
+        self.assertIn("booking.example/rep", row.body_html)
         self.assertEqual(row.asset_ids, [link.pk])
 
     def test_fixed_mode_with_an_empty_template_is_held(self):
@@ -409,7 +409,7 @@ class SendTests(Base):
         self.assertEqual(names, ["deck.pdf"] if names == ["deck.pdf"] else names)
         self.assertEqual(len(kwargs["attachments"]), 1)
         self.assertIn("Big brochure", kwargs["html_body"])
-        self.assertIn("loom.com/hodos-demo", kwargs["html_body"])
+        self.assertIn("video.example/demo", kwargs["html_body"])
         # loop closed
         self.contact.refresh_from_db()
         self.assertEqual(self.contact.email, ADDRESS)

@@ -56,7 +56,7 @@ class AgentEmailSettings(models.Model):
         related_name="agent_email_settings",
     )
     # Free-text instructions to the email writer ("always attach the deck when
-    # asked for details; never quote prices; sign off as Rayees").
+    # asked for details; never quote prices; sign off as Sam").
     playbook = models.TextField(blank=True, default="")
     daily_cap = models.PositiveIntegerField(default=20)
     cc_owner = models.BooleanField(default=False)

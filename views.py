@@ -186,10 +186,10 @@ class AgentEmailSettingsViewSet(GenericViewSet):
 
         sample = {
             "prospect": {
-                "name": request.data.get("sample_name") or "Pratapraj Nadar",
-                "first_name": (request.data.get("sample_name") or "Pratapraj").split(" ")[0],
+                "name": request.data.get("sample_name") or "Jane Doe",
+                "first_name": (request.data.get("sample_name") or "Jane").split(" ")[0],
                 "title": request.data.get("sample_role") or "Director",
-                "company": request.data.get("sample_company") or "RebelCorp",
+                "company": request.data.get("sample_company") or "ProspectCo",
             },
             "persona": persona_of(agent),
             "booking_link": (getattr(agent, "meeting_link", "") or ""),

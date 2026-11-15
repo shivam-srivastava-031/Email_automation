@@ -27,7 +27,7 @@ from .tests import GEMINI, model_says
 from .views import AgentEmailSettingsViewSet, EmailAssetViewSet, TeamEmailSettingsView
 
 MIGRATION = importlib.import_module("email_orchestrator.migrations.0005_team_sharing")
-BOOKING = "https://cal.com/hodos"           # the rep agent's own booking link (fixture)
+BOOKING = "https://booking.example/rep"           # the rep agent's own booking link (fixture)
 TEAM_LINK = "https://acme.example/meet"
 
 
@@ -95,8 +95,8 @@ class TeamContentEngineTests(TeamBase):
     def test_a_team_fixed_template_is_filled_for_this_prospect(self):
         self.team(body_mode="fixed", fixed_subject="For {{company_name}}", fixed_body="Hi {{first_name}}, as promised.")
         row, _prompt = self.decided(body_markdown="AI PROSE")
-        self.assertEqual(row.subject, "For RebelCorp")
-        self.assertIn("Hi Pratapraj, as promised.", row.body_html)
+        self.assertEqual(row.subject, "For ProspectCo")
+        self.assertIn("Hi Jane, as promised.", row.body_html)
         self.assertNotIn("AI PROSE", row.body_html)
 
     def test_the_reps_switch_off_means_their_own_content(self):

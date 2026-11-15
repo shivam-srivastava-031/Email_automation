@@ -21,7 +21,7 @@ from .views import AgentEmailSettingsViewSet, EmailAssetViewSet
 MIGRATION = importlib.import_module(
     "email_orchestrator.migrations.0004_simple_email_cta_retire_company_library"
 )
-BOOKING = "https://cal.com/hodos"
+BOOKING = "https://booking.example/rep"
 
 
 class SimpleBase(SharedBase):
@@ -94,7 +94,7 @@ class CallToActionTests(SimpleBase):
                     fixed_body="Hi {{first_name}},\n\nAs promised.")
         row, _prompt = self.decided(body_markdown="AI PROSE")
         self.assertNotIn("AI PROSE", row.body_html)
-        self.assertIn("Hi Pratapraj", row.body_html)
+        self.assertIn("Hi Jane", row.body_html)
         self.assertLess(row.body_html.index("As promised"), row.body_html.index(BOOKING))
 
     def test_custom_text_and_link_are_used_and_escaped(self):
@@ -133,7 +133,7 @@ class PreviewAndSettingsTests(SimpleBase):
     def test_preview_shows_the_template_and_the_same_button(self):
         r = self.preview({"subject": "Hi {{first_name}}", "body": "As promised.", "include_cta": True})
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(r.data["subject"], "Hi Pratapraj")
+        self.assertEqual(r.data["subject"], "Hi Jane")
         self.assertIn("As promised.", r.data["body_html"])
         self.assertIn(engine.cta_html("Book a 15-minute call", BOOKING), r.data["body_html"])
         r = self.preview({"body": "x", "include_cta": False})
