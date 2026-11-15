@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
@@ -14,9 +15,10 @@ from . import ai, campaigns as svc, gmail
 from .csv_import import import_csv
 from .forms import AttachmentForm, CampaignForm, ContactForm, ImportForm, SettingsForm
 from .models import (
-    AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, sent_today_count,
+    AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, Reply, sent_today_count,
 )
 from .render import BASE_FIELDS, build_email, fill, unknown_fields
+from .replies import sync_replies
 
 log = logging.getLogger(__name__)
 
@@ -382,6 +384,70 @@ def attachment_delete(request, pk):
     att.delete()
     messages.success(request, "File removed.")
     return redirect("campaign_edit", pk=campaign_id)
+
+
+# ── Inbox: sent emails and the replies to them ──────────────────────────────
+
+@login_required
+def inbox(request):
+    view = request.GET.get("f") if request.GET.get("f") in ("replies", "sent") else "replies"
+    q = request.GET.get("q", "").strip()
+    account = GmailAccount.current()
+
+    if view == "replies":
+        rows = Reply.objects.select_related("message__contact", "message__campaign")
+        if q:
+            rows = rows.filter(Q(from_email__icontains=q) | Q(from_name__icontains=q) | Q(subject__icontains=q)
+                               | Q(snippet__icontains=q) | Q(message__contact__company__icontains=q))
+    else:
+        rows = (Message.objects.select_related("contact", "campaign").filter(status=Message.STATUS_SENT)
+                .annotate(reply_count=Count("replies")).order_by("-sent_at"))
+        if q:
+            rows = rows.filter(Q(contact__email__icontains=q) | Q(contact__first_name__icontains=q)
+                               | Q(contact__last_name__icontains=q) | Q(contact__company__icontains=q) | Q(subject__icontains=q))
+    page = Paginator(rows, 30).get_page(request.GET.get("page"))
+
+    # The open conversation: the email we sent and every reply to it.
+    thread = None
+    open_id = request.GET.get("open")
+    if open_id and open_id.isdigit():
+        thread = Message.objects.select_related("contact", "campaign").filter(pk=open_id, status=Message.STATUS_SENT).first()
+    if thread is not None:
+        app = AppSettings.load()
+        thread.preview_html = build_email(thread.body, thread.campaign.cta_text, thread.campaign.cta_url, app.signature)[0]
+        thread.thread_replies = list(thread.replies.order_by("received_at"))
+        thread.replies.filter(is_read=False).update(is_read=True)
+
+    return render(request, "mailer/inbox.html", {
+        "tab": "inbox",
+        "view": view,
+        "q": q,
+        "page": page,
+        "thread": thread,
+        "account": account,
+        "can_read": bool(account and account.can_read_replies),
+        "reply_count": Reply.objects.filter(kind=Reply.KIND_REPLY).count(),
+        "unread_count": Reply.objects.filter(is_read=False).count(),
+        "sent_count": Message.objects.filter(status=Message.STATUS_SENT).count(),
+        "replied_count": Message.objects.filter(replied_at__isnull=False).count(),
+        "keep": urlencode({k: v for k, v in (("f", view), ("q", q), ("page", request.GET.get("page", ""))) if v}),
+    })
+
+
+@login_required
+@require_POST
+def inbox_sync(request):
+    account = GmailAccount.current()
+    if account is None or not account.can_read_replies:
+        messages.error(request, "Reconnect Gmail in Settings to allow reading replies.")
+        return redirect("inbox")
+    try:
+        added = sync_replies()
+    except gmail.GmailError as exc:
+        messages.error(request, f"Could not check for replies: {exc}")
+    else:
+        messages.success(request, f"{added} new repl{'y' if added == 1 else 'ies'}." if added else "No new replies.")
+    return redirect(request.POST.get("next") or "inbox")
 
 
 # ── Settings & Gmail ────────────────────────────────────────────────────────

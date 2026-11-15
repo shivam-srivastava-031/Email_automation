@@ -1,10 +1,11 @@
-"""Gmail: connect with OAuth (send-only) and send messages through the Gmail API."""
+"""Gmail: connect with OAuth, send messages, and read replies to them, via the Gmail API."""
 import base64
 import mimetypes
 import os
-from datetime import timezone as dt_timezone
+import re
+from datetime import datetime, timezone as dt_timezone
 from email.message import EmailMessage
-from email.utils import formataddr
+from email.utils import formataddr, parseaddr, parsedate_to_datetime
 
 import requests
 from django.conf import settings
@@ -16,6 +17,8 @@ SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/gmail.send",
+    # Read-only: used only to find replies in the conversations of emails this app sent.
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 
@@ -136,20 +139,94 @@ def build_mime(from_name, from_email, to, subject, html_body, text_body, attachm
     return msg
 
 
-def send_message(account, mime):
-    """Send through the Gmail API. Returns the Gmail message id."""
+def _service(account):
     from googleapiclient.discovery import build
+
+    return build("gmail", "v1", credentials=_credentials(account), cache_discovery=False)
+
+
+def _call(request, what):
+    """Run a Gmail API request, turning failures into GmailError."""
     from googleapiclient.errors import HttpError
 
-    creds = _credentials(account)
-    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
     try:
-        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-        sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        return request.execute()
     except HttpError as exc:
         status = getattr(exc.resp, "status", 0)
-        # 400 bad recipient / 403 no permission: retrying will not help.
-        raise GmailError(f"Gmail refused the email ({status}): {exc.reason}", permanent=status in (400, 401, 403)) from exc
+        # 400 bad request / 401-403 no permission: retrying will not help.
+        raise GmailError(f"Gmail refused to {what} ({status}): {exc.reason}", permanent=status in (400, 401, 403)) from exc
+    except GmailError:
+        raise
     except Exception as exc:  # network trouble: worth another try later
         raise GmailError(f"Could not reach Gmail: {exc}") from exc
-    return sent.get("id", "")
+
+
+def send_message(account, mime):
+    """Send through the Gmail API. Returns {"id", "threadId"}."""
+    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
+    sent = _call(_service(account).users().messages().send(userId="me", body={"raw": raw}), "send the email")
+    return {"id": sent.get("id", ""), "threadId": sent.get("threadId", "")}
+
+
+def list_message_ids(account, query, max_pages=5):
+    """(message id, thread id) pairs matching a Gmail search, newest first."""
+    service = _service(account)
+    out, token = [], None
+    for _ in range(max_pages):
+        resp = _call(service.users().messages().list(userId="me", q=query, maxResults=500, pageToken=token),
+                     "list messages")
+        out += [(m["id"], m["threadId"]) for m in resp.get("messages", [])]
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return out
+
+
+def _plain_text(payload):
+    """The text/plain body of a Gmail message payload (falls back to stripped HTML)."""
+    def walk(part):
+        yield part
+        for sub in part.get("parts", []) or []:
+            yield from walk(sub)
+
+    def decode(part):
+        data = (part.get("body") or {}).get("data", "")
+        return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", errors="replace") if data else ""
+
+    parts = list(walk(payload))
+    for p in parts:
+        if p.get("mimeType") == "text/plain" and not p.get("filename"):
+            text = decode(p)
+            if text.strip():
+                return text.strip()
+    for p in parts:
+        if p.get("mimeType") == "text/html" and not p.get("filename"):
+            html = re.sub(r"(?is)<(script|style).*?</\1>", "", decode(p))
+            html = re.sub(r"(?i)<br\s*/?>|</p>|</div>", "\n", html)
+            return re.sub(r"\n{3,}", "\n\n", re.sub(r"<[^>]+>", "", html)).strip()
+    return ""
+
+
+def get_message(account, message_id):
+    """One message as {"id", "threadId", "from_email", "from_name", "subject", "snippet", "body", "received_at"}."""
+    import html as html_lib
+
+    msg = _call(_service(account).users().messages().get(userId="me", id=message_id, format="full"), "read a message")
+    headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+    name, addr = parseaddr(headers.get("from", ""))
+    try:
+        received = parsedate_to_datetime(headers["date"])
+        if received.tzinfo is None:
+            received = received.replace(tzinfo=dt_timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        received = datetime.fromtimestamp(int(msg.get("internalDate", "0")) / 1000, tz=dt_timezone.utc)
+    return {
+        "id": msg["id"],
+        "threadId": msg.get("threadId", ""),
+        "from_email": addr.lower(),
+        "from_name": name,
+        "subject": headers.get("subject", ""),
+        "snippet": html_lib.unescape(msg.get("snippet", "")),
+        "body": _plain_text(msg.get("payload", {})),
+        "received_at": received,
+    }

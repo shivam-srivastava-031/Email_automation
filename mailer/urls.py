@@ -25,6 +25,9 @@ urlpatterns = [
     path("files/<int:pk>/delete/", views.attachment_delete, name="attachment_delete"),
     path("messages/<int:pk>/", views.message_action, name="message_action"),
 
+    path("inbox/", views.inbox, name="inbox"),
+    path("inbox/check/", views.inbox_sync, name="inbox_sync"),
+
     path("settings/", views.settings_view, name="settings"),
     path("gmail/connect/", views.gmail_connect, name="gmail_connect"),
     path("gmail/callback/", views.gmail_callback, name="gmail_callback"),

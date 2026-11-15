@@ -74,10 +74,10 @@ class SettingsForm(forms.ModelForm):
         model = AppSettings
         fields = ["sender_name", "company_name", "product_description", "signature", "daily_limit"]
         widgets = {
-            "product_description": forms.Textarea(attrs={"rows": 4, "placeholder": "e.g. We build an AI assistant that books sales meetings from LinkedIn and email."}),
+            "product_description": forms.Textarea(attrs={"rows": 4, "placeholder": "e.g. Full stack developer (Django, React) with 9+ months of internship experience... or: We build an AI assistant that books sales meetings."}),
             "signature": forms.Textarea(attrs={"rows": 3, "placeholder": "Your Name\nYour Title, Your Company"}),
         }
-        labels = {"sender_name": "Your name", "company_name": "Company", "product_description": "What you offer",
+        labels = {"sender_name": "Your name", "company_name": "Company (optional)", "product_description": "About you / what you offer",
                   "daily_limit": "Daily limit"}
         help_texts = {"daily_limit": "Most emails sent per day. New Gmail accounts: start around 30-50."}
 

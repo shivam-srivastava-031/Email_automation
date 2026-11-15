@@ -40,6 +40,7 @@ class GmailAccount(models.Model):
     token_expiry = models.DateTimeField(null=True, blank=True)
     scopes = models.TextField(blank=True, default="")
     connected_at = models.DateTimeField(null=True, blank=True)
+    last_reply_sync = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.email or "Gmail (not connected)"
@@ -47,6 +48,11 @@ class GmailAccount(models.Model):
     @property
     def is_connected(self):
         return bool(self.email and self.refresh_token)
+
+    @property
+    def can_read_replies(self):
+        """Connected with the read-only scope (needed to find replies)."""
+        return "gmail.readonly" in (self.scopes or "")
 
     @classmethod
     def current(cls):
@@ -193,7 +199,9 @@ class Message(models.Model):
     error = models.TextField(blank=True, default="")
     attempts = models.PositiveSmallIntegerField(default=0)
     gmail_id = models.CharField(max_length=64, blank=True, default="")
+    gmail_thread_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
     sent_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    replied_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -203,6 +211,36 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.campaign} → {self.contact}"
+
+    @property
+    def gmail_url(self):
+        return f"https://mail.google.com/mail/u/0/#all/{self.gmail_thread_id}" if self.gmail_thread_id else ""
+
+
+class Reply(models.Model):
+    """A message that arrived in the Gmail conversation of an email we sent."""
+    KIND_REPLY = "reply"
+    KIND_BOUNCE = "bounce"
+    KIND_CHOICES = [(KIND_REPLY, "Reply"), (KIND_BOUNCE, "Bounce")]
+
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="replies")
+    gmail_id = models.CharField(max_length=64, unique=True)
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=KIND_REPLY)
+    from_email = models.CharField(max_length=320, blank=True, default="")
+    from_name = models.CharField(max_length=200, blank=True, default="")
+    subject = models.CharField(max_length=500, blank=True, default="")
+    snippet = models.TextField(blank=True, default="")
+    body = models.TextField(blank=True, default="", help_text="Plain-text body as received.")
+    received_at = models.DateTimeField(db_index=True)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-received_at"]
+        verbose_name_plural = "replies"
+
+    def __str__(self):
+        return f"{self.from_email}: {self.subject}"
 
 
 def sent_today_count(now=None):

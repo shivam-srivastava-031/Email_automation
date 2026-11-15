@@ -34,6 +34,7 @@
     <a href="{% url 'dashboard' %}" class="{% if tab == 'overview' %}active{% endif %}" {% if tab == 'overview' %}aria-current="page"{% endif %}>Overview</a>
     <a href="{% url 'contacts' %}" class="{% if tab == 'contacts' %}active{% endif %}" {% if tab == 'contacts' %}aria-current="page"{% endif %}>Contacts</a>
     <a href="{% url 'campaign_list' %}" class="{% if tab == 'campaigns' %}active{% endif %}" {% if tab == 'campaigns' %}aria-current="page"{% endif %}>Campaigns {% if nav_to_review %}<span class="badge" title="Emails to review">{{ nav_to_review }}</span>{% endif %}</a>
+    <a href="{% url 'inbox' %}" class="{% if tab == 'inbox' %}active{% endif %}" {% if tab == 'inbox' %}aria-current="page"{% endif %}>Inbox {% if nav_unread %}<span class="badge badge-blue" title="Unread replies">{{ nav_unread }}</span>{% endif %}</a>
     <a href="{% url 'settings' %}" class="{% if tab == 'settings' %}active{% endif %}" {% if tab == 'settings' %}aria-current="page"{% endif %}>Settings</a>
   </nav>
 </header>

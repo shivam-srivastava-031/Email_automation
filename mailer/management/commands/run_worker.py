@@ -34,6 +34,8 @@ class Command(BaseCommand):
             self.stdout.write("Worker stopped.")
 
     def _report(self, result):
+        if result.get("replies"):
+            self.stdout.write(f"New replies: {result['replies']} (see the Inbox tab).")
         if result["written"]:
             self.stdout.write(f"AI wrote {result['written']} email(s).")
         msg = result["sent"]

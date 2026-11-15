@@ -17,11 +17,11 @@ class AIError(Exception):
     """The AI could not write this email (bad key, quota, bad output)."""
 
 
-PROMPT = """You write one short, personal cold email for a salesperson.
+PROMPT = """You write one short, personal email from the sender to one recipient, in the sender's own voice.
 
 FROM
 - {sender_name}{sender_company}
-- What they offer: {product}
+- About the sender: {product}
 
 TO
 - Name: {name}
@@ -57,7 +57,7 @@ def build_prompt(campaign, contact, app_settings):
         role=contact.role or "unknown",
         company=contact.company or "unknown",
         extra=extra,
-        instructions=campaign.ai_instructions.strip() or "Introduce the offer and ask for a short call.",
+        instructions=campaign.ai_instructions.strip() or "Introduce yourself and ask for a short call.",
         cta_rule=cta_rule,
     )
 

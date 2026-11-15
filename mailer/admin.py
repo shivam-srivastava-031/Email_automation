@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message
+from .models import AppSettings, Attachment, Campaign, Contact, ContactList, GmailAccount, Message, Reply
 
 
 @admin.register(Contact)
@@ -27,6 +27,13 @@ class MessageAdmin(admin.ModelAdmin):
 class GmailAccountAdmin(admin.ModelAdmin):
     list_display = ("email", "connected_at")
     exclude = ("refresh_token", "access_token")  # never show tokens
+
+
+@admin.register(Reply)
+class ReplyAdmin(admin.ModelAdmin):
+    list_display = ("from_email", "subject", "kind", "received_at", "is_read")
+    list_filter = ("kind", "is_read")
+    search_fields = ("from_email", "subject", "snippet")
 
 
 admin.site.register(ContactList)

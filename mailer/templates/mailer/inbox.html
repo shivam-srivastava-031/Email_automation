@@ -1,0 +1,151 @@
+{% extends "mailer/base.html" %}
+{% block title %}Inbox · Email automation{% endblock %}
+{% block content %}
+<div class="stack">
+  <div class="row spread">
+    <div>
+      <h1>Inbox</h1>
+      <p class="hint">Emails you sent from this app, and the replies people sent back.</p>
+    </div>
+    {% if can_read %}
+    <form method="post" action="{% url 'inbox_sync' %}" class="inline">{% csrf_token %}
+      <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      <button class="btn btn-outline" type="submit">Check for replies</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if not account %}
+    <div class="alert alert-warning">Gmail is not connected. <a href="{% url 'settings' %}">Connect Gmail</a> to send emails and see replies.</div>
+  {% elif not can_read %}
+    <div class="alert alert-warning row spread">
+      <span>To show replies here, the app needs permission to read the replies to emails it sent. Reconnect Gmail once and allow it.</span>
+      <a class="btn btn-primary btn-sm" href="{% url 'gmail_connect' %}">Reconnect Gmail</a>
+    </div>
+  {% elif account.last_reply_sync %}
+    <p class="small muted" style="margin-top:-6px">Last checked {{ account.last_reply_sync|timesince }} ago. The worker checks every couple of minutes while it runs.</p>
+  {% endif %}
+
+  <section class="stats" aria-label="Summary">
+    <div class="stat"><div class="label">Sent</div><div class="value">{{ sent_count }}</div></div>
+    <div class="stat"><div class="label">Replied</div><div class="value" {% if replied_count %}style="color:var(--green)"{% endif %}>{{ replied_count }}</div>
+      <div class="sub">{% if sent_count %}{% widthratio replied_count sent_count 100 %}% reply rate{% else %}—{% endif %}</div></div>
+    <div class="stat"><div class="label">Unread replies</div><div class="value" {% if unread_count %}style="color:var(--blue-dark)"{% endif %}>{{ unread_count }}</div></div>
+  </section>
+
+  <div class="cols">
+    <!-- List -->
+    <section class="card col-side" style="flex:1 1 380px;overflow:hidden">
+      <div class="card-head">
+        <nav class="filters grow" aria-label="Show">
+          <a href="?f=replies" class="{% if view == 'replies' %}active{% endif %}" {% if view == 'replies' %}aria-current="page"{% endif %}>Replies{% if unread_count %} · {{ unread_count }} new{% endif %}</a>
+          <a href="?f=sent" class="{% if view == 'sent' %}active{% endif %}" {% if view == 'sent' %}aria-current="page"{% endif %}>Sent · {{ sent_count }}</a>
+        </nav>
+      </div>
+      <form method="get" style="padding:12px 16px;border-bottom:1px solid var(--line)" role="search">
+        <input type="hidden" name="f" value="{{ view }}">
+        <label for="iq" style="position:absolute;left:-9999px">Search</label>
+        <input type="search" id="iq" name="q" value="{{ q }}" placeholder="Search name, email, company, subject">
+      </form>
+
+      {% if page.object_list %}
+        <ul class="inbox-list">
+        {% if view == 'replies' %}
+          {% for r in page %}
+          <li>
+            <a href="?{{ keep }}&open={{ r.message_id }}" class="inbox-item {% if thread.pk == r.message_id %}active{% endif %} {% if not r.is_read %}unread{% endif %}">
+              <span class="avatar" aria-hidden="true">{{ r.from_name|default:r.from_email|first|upper }}</span>
+              <span class="grow">
+                <span class="row" style="gap:6px;flex-wrap:nowrap">
+                  <span class="inbox-name">{{ r.from_name|default:r.from_email }}</span>
+                  {% if r.kind == 'bounce' %}<span class="chip chip-failed">Bounced</span>{% endif %}
+                  <span class="small muted" style="margin-left:auto;white-space:nowrap">{{ r.received_at|date:"M j" }}</span>
+                </span>
+                <span class="inbox-subject">{{ r.subject|default:"(no subject)" }}</span>
+                <span class="inbox-snippet">{{ r.snippet|truncatechars:110 }}</span>
+              </span>
+            </a>
+          </li>
+          {% endfor %}
+        {% else %}
+          {% for m in page %}
+          <li>
+            <a href="?{{ keep }}&open={{ m.pk }}" class="inbox-item {% if thread.pk == m.pk %}active{% endif %}">
+              <span class="avatar" aria-hidden="true">{{ m.contact.first_name|first|upper|default:"?" }}{{ m.contact.last_name|first|upper }}</span>
+              <span class="grow">
+                <span class="row" style="gap:6px;flex-wrap:nowrap">
+                  <span class="inbox-name">{{ m.contact.full_name|default:m.contact.email }}</span>
+                  {% if m.reply_count %}<span class="chip chip-sent">Replied</span>{% endif %}
+                  <span class="small muted" style="margin-left:auto;white-space:nowrap">{{ m.sent_at|date:"M j" }}</span>
+                </span>
+                <span class="inbox-subject">{{ m.subject }}</span>
+                <span class="inbox-snippet">{{ m.contact.email }}{% if m.contact.company %} · {{ m.contact.company }}{% endif %}</span>
+              </span>
+            </a>
+          </li>
+          {% endfor %}
+        {% endif %}
+        </ul>
+        {% if page.has_other_pages %}
+        <div class="card-foot row spread small">
+          <span class="muted">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+          <span class="row">
+            {% if page.has_previous %}<a class="btn btn-outline btn-sm" href="?f={{ view }}{% if q %}&q={{ q|urlencode }}{% endif %}&page={{ page.previous_page_number }}">Previous</a>{% endif %}
+            {% if page.has_next %}<a class="btn btn-outline btn-sm" href="?f={{ view }}{% if q %}&q={{ q|urlencode }}{% endif %}&page={{ page.next_page_number }}">Next</a>{% endif %}
+          </span>
+        </div>
+        {% endif %}
+      {% else %}
+        <div class="empty">
+          {% if q %}<h3>Nothing matches</h3><p>Try another search.</p>
+          {% elif view == 'replies' %}<h3>No replies yet</h3><p>{% if can_read %}Replies to your emails show up here a few minutes after they arrive.{% else %}Reconnect Gmail above to see replies.{% endif %}</p>
+          {% else %}<h3>Nothing sent yet</h3><p>Start a campaign and keep the worker running.</p>{% endif %}
+        </div>
+      {% endif %}
+    </section>
+
+    <!-- Conversation -->
+    <section class="card col-main" style="flex:999 1 520px" aria-label="Conversation">
+      {% if thread %}
+        <div class="card-head">
+          <div class="grow">
+            <h2>{{ thread.contact.full_name|default:thread.contact.email }}</h2>
+            <div class="small muted">{{ thread.contact.email }}{% if thread.contact.company %} · {{ thread.contact.company }}{% endif %}{% if thread.contact.role %} · {{ thread.contact.role }}{% endif %}</div>
+          </div>
+          {% if thread.gmail_url %}<a class="btn btn-outline btn-sm" href="{{ thread.gmail_url }}" target="_blank" rel="noopener">Open in Gmail</a>{% endif %}
+        </div>
+        <div class="card-pad stack">
+          <article class="email-box">
+            <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--soft)">
+              <span class="chip chip-queued">You</span>
+              <span class="grow small muted">to {{ thread.contact.email }} · <a href="{% url 'campaign_detail' thread.campaign_id %}">{{ thread.campaign.name }}</a></span>
+              <span class="small muted">{{ thread.sent_at|date:"M j, Y H:i" }}</span>
+            </div>
+            <div class="preview-subject">{{ thread.subject }}</div>
+            <div class="preview-body">{{ thread.preview_html|safe }}</div>
+          </article>
+
+          {% for r in thread.thread_replies %}
+          <article class="email-box" style="{% if r.kind == 'bounce' %}border-color:#FCA5A5{% else %}border-color:#BFDBFE{% endif %}">
+            <div class="row" style="padding:10px 16px;border-bottom:1px solid var(--border);background:{% if r.kind == 'bounce' %}#FEF2F2{% else %}var(--tint){% endif %}">
+              <span class="chip {% if r.kind == 'bounce' %}chip-failed{% else %}chip-sent{% endif %}">{% if r.kind == 'bounce' %}Bounced{% else %}Reply{% endif %}</span>
+              <span class="grow small"><b>{{ r.from_name|default:r.from_email }}</b> <span class="muted">&lt;{{ r.from_email }}&gt;</span></span>
+              <span class="small muted">{{ r.received_at|date:"M j, Y H:i" }}</span>
+            </div>
+            <div class="preview-body reply-body">{{ r.body|default:r.snippet|linebreaksbr }}</div>
+          </article>
+          {% empty %}
+          <p class="small muted">No reply yet.</p>
+          {% endfor %}
+
+          {% if thread.thread_replies %}
+          <p class="small muted">To answer, use <a href="{{ thread.gmail_url }}" target="_blank" rel="noopener">Open in Gmail</a>; the conversation continues there.</p>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="empty"><h3>Pick a conversation</h3><p>Choose a reply or a sent email on the left to read it.</p></div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

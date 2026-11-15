@@ -117,6 +117,7 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 
 # ── Sending ────────────────────────────────────────────────────────────────
 SEND_INTERVAL_SECONDS = int(os.environ.get("SEND_INTERVAL_SECONDS", "45"))
+REPLY_SYNC_SECONDS = int(os.environ.get("REPLY_SYNC_SECONDS", "120"))  # how often the worker checks for replies
 MAX_ATTACHMENT_MB = 20  # Gmail's limit is 25 MB per message, encoding included
 
 LOGGING = {

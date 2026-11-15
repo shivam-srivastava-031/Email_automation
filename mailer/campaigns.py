@@ -160,7 +160,7 @@ def send_next(now=None, sender=gmail.send_message):
         return msg
 
     try:
-        gmail_id = sender(account, compose(msg, account, app))
+        result = sender(account, compose(msg, account, app))
     except gmail.GmailError as exc:
         msg.attempts += 1
         msg.error = str(exc)
@@ -169,17 +169,37 @@ def send_next(now=None, sender=gmail.send_message):
         msg.save(update_fields=["attempts", "error", "status", "updated_at"])
         log.warning("Sending message %s failed: %s", msg.pk, exc)
     else:
-        msg.status, msg.gmail_id, msg.sent_at, msg.error = Message.STATUS_SENT, gmail_id, now, ""
-        msg.save(update_fields=["status", "gmail_id", "sent_at", "error", "updated_at"])
+        if not isinstance(result, dict):  # a bare id
+            result = {"id": result}
+        msg.status, msg.sent_at, msg.error = Message.STATUS_SENT, now, ""
+        msg.gmail_id, msg.gmail_thread_id = result.get("id", ""), result.get("threadId", "")
+        msg.save(update_fields=["status", "gmail_id", "gmail_thread_id", "sent_at", "error", "updated_at"])
         log.info("Sent message %s to %s", msg.pk, msg.contact.email)
     refresh_done(msg.campaign)
     return msg
 
 
-def tick(now=None, writer=ai.write_email, sender=gmail.send_message):
-    """One worker pass: write some AI drafts, then send at most one email."""
+def replies_due(now=None):
+    account = GmailAccount.current()
+    if account is None or not account.can_read_replies:
+        return False
+    last = account.last_reply_sync
+    return last is None or ((now or timezone.now()) - last).total_seconds() >= settings.REPLY_SYNC_SECONDS
+
+
+def tick(now=None, writer=ai.write_email, sender=gmail.send_message, syncer=None):
+    """One worker pass: write some AI drafts, send at most one email, and now and then look for replies."""
+    from .replies import sync_replies
+
     written = write_pending(writer=writer)
     sent = send_next(now=now, sender=sender)
     for campaign in Campaign.objects.filter(status=Campaign.STATUS_RUNNING):
         refresh_done(campaign)
-    return {"written": written, "sent": sent}
+    new_replies = 0
+    if replies_due(now):
+        try:
+            new_replies = (syncer or sync_replies)(now=now)
+        except gmail.GmailError as exc:  # never let reply checks stop sending
+            log.warning("Checking replies failed: %s", exc)
+            GmailAccount.objects.filter(pk=1).update(last_reply_sync=now or timezone.now())
+    return {"written": written, "sent": sent, "replies": new_replies}

@@ -201,6 +201,95 @@ class MimeTests(TestCase):
         self.assertEqual(names, ["deck.pdf"])
 
 
+READ_SCOPES = " ".join(gmail.SCOPES)
+
+
+def reply_data(mid, tid, sender="hr@prospect.example", subject="Re: Hello", when=None):
+    return {"id": mid, "threadId": tid, "from_email": sender, "from_name": "Priya HR", "subject": subject,
+            "snippet": "Thanks, please share", "body": "Thanks, please share your notice period.",
+            "received_at": when or timezone.now()}
+
+
+class ReplySyncTests(TestCase):
+    def setUp(self):
+        self.account = GmailAccount.objects.create(pk=1, email="sender@example.com", refresh_token="rt", scopes=READ_SCOPES)
+        contact = Contact.objects.create(email="hr@prospect.example", first_name="Priya")
+        self.campaign = Campaign.objects.create(name="Jobs", subject="s", body="b")
+        self.msg = Message.objects.create(campaign=self.campaign, contact=contact, status=Message.STATUS_SENT,
+                                          subject="Hello", body="b", gmail_id="sent1", gmail_thread_id="t1", sent_at=timezone.now())
+
+    def run_sync(self, listed, data):
+        from .replies import sync_replies
+        return sync_replies(list_ids=lambda account, q: listed, fetch=lambda account, mid: data[mid])
+
+    def test_stores_only_new_replies_in_our_threads(self):
+        from .models import Reply
+        listed = [("r1", "t1"), ("x1", "other-thread"), ("sent1", "t1"), ("own1", "t1")]
+        data = {"r1": reply_data("r1", "t1"), "own1": reply_data("own1", "t1", sender="sender@example.com")}
+        self.assertEqual(self.run_sync(listed, data), 1)
+        reply = Reply.objects.get()
+        self.assertEqual((reply.message, reply.kind, reply.is_read), (self.msg, Reply.KIND_REPLY, False))
+        self.msg.refresh_from_db()
+        self.assertIsNotNone(self.msg.replied_at)
+        self.assertEqual(self.run_sync(listed, data), 0)  # no duplicates on the next check
+        self.account.refresh_from_db()
+        self.assertIsNotNone(self.account.last_reply_sync)
+
+    def test_bounce_is_marked_and_not_counted_as_reply(self):
+        from .models import Reply
+        data = {"b1": reply_data("b1", "t1", sender="mailer-daemon@googlemail.com", subject="Delivery Status Notification (Failure)")}
+        self.run_sync([("b1", "t1")], data)
+        self.assertEqual(Reply.objects.get().kind, Reply.KIND_BOUNCE)
+        self.msg.refresh_from_db()
+        self.assertIsNone(self.msg.replied_at)
+
+    def test_needs_read_scope(self):
+        GmailAccount.objects.filter(pk=1).update(scopes="https://www.googleapis.com/auth/gmail.send")
+        listed = mock.Mock()
+        from .replies import sync_replies
+        self.assertEqual(sync_replies(list_ids=listed, fetch=mock.Mock()), 0)
+        listed.assert_not_called()
+
+    @override_settings(REPLY_SYNC_SECONDS=120)
+    def test_worker_checks_replies_on_schedule(self):
+        syncer = mock.Mock(return_value=2)
+        t = timezone.now()
+        self.assertEqual(svc.tick(now=t, syncer=syncer)["replies"], 2)
+        GmailAccount.objects.filter(pk=1).update(last_reply_sync=t)
+        svc.tick(now=t + timedelta(seconds=30), syncer=syncer)
+        self.assertEqual(syncer.call_count, 1)  # not due yet
+        svc.tick(now=t + timedelta(seconds=130), syncer=syncer)
+        self.assertEqual(syncer.call_count, 2)
+
+    def test_worker_survives_reply_check_errors(self):
+        def boom(now=None):
+            raise gmail.GmailError("network down")
+        self.assertEqual(svc.tick(syncer=boom)["replies"], 0)
+
+
+class GmailParsingTests(TestCase):
+    def test_send_next_stores_thread_id(self):
+        connect_gmail()
+        AppSettings.objects.create(pk=1, daily_limit=5)
+        Contact.objects.create(email="p@example.com")
+        c = Campaign.objects.create(name="C", subject="s", body="b", review_first=False)
+        svc.start(c)
+        msg = svc.send_next(sender=lambda account, mime: {"id": "m1", "threadId": "t9"})
+        self.assertEqual((msg.gmail_id, msg.gmail_thread_id), ("m1", "t9"))
+        self.assertIn("#all/t9", msg.gmail_url)
+
+    def test_plain_text_prefers_text_part_and_falls_back_to_html(self):
+        import base64 as b64
+        enc = lambda s: b64.urlsafe_b64encode(s.encode()).decode().rstrip("=")
+        payload = {"mimeType": "multipart/alternative", "parts": [
+            {"mimeType": "text/html", "body": {"data": enc("<p>Hi <b>there</b></p>")}},
+            {"mimeType": "text/plain", "body": {"data": enc("Hi there")}},
+        ]}
+        self.assertEqual(gmail._plain_text(payload), "Hi there")
+        html_only = {"mimeType": "text/html", "body": {"data": enc("<div>Line one</div><div>Line two</div>")}}
+        self.assertEqual(gmail._plain_text(html_only), "Line one\nLine two")
+
+
 class ViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("me", password="pw-for-tests")
@@ -238,6 +327,33 @@ class ViewTests(TestCase):
         self.client.post(reverse("message_action", args=[msg.pk]), {"action": "approve", "subject": "Edited", "body": "New body"})
         msg.refresh_from_db()
         self.assertEqual((msg.status, msg.subject), (Message.STATUS_APPROVED, "Edited"))
+
+    def test_inbox_lists_replies_and_opens_thread(self):
+        from .models import Reply
+        self.client.force_login(self.user)
+        GmailAccount.objects.create(pk=1, email="sender@example.com", refresh_token="rt", scopes=READ_SCOPES)
+        contact = Contact.objects.create(email="hr@prospect.example", first_name="Priya", company="ProspectCo")
+        campaign = Campaign.objects.create(name="Jobs", subject="s", body="b")
+        msg = Message.objects.create(campaign=campaign, contact=contact, status=Message.STATUS_SENT, subject="My resume",
+                                     body="Hello Priya", gmail_thread_id="t1", sent_at=timezone.now())
+        Reply.objects.create(message=msg, gmail_id="r1", from_email="hr@prospect.example", from_name="Priya",
+                             subject="Re: My resume", snippet="Please share", body="Please share <b>notice</b>",
+                             received_at=timezone.now())
+        r = self.client.get(reverse("inbox"))
+        self.assertContains(r, "Re: My resume")
+        self.assertContains(r, 'class="badge badge-blue"')  # unread count in the tab
+        r = self.client.get(reverse("inbox"), {"f": "replies", "open": msg.pk})
+        self.assertContains(r, "Please share &lt;b&gt;notice&lt;/b&gt;")  # reply body escaped
+        self.assertContains(r, "Hello Priya")                            # the email we sent
+        self.assertFalse(Reply.objects.filter(is_read=False).exists())  # opening marks it read
+        r = self.client.get(reverse("inbox"), {"f": "sent", "q": "prospectco"})
+        self.assertContains(r, "Replied")
+
+    def test_inbox_asks_to_reconnect_without_read_scope(self):
+        self.client.force_login(self.user)
+        GmailAccount.objects.create(pk=1, email="sender@example.com", refresh_token="rt",
+                                    scopes="https://www.googleapis.com/auth/gmail.send")
+        self.assertContains(self.client.get(reverse("inbox")), "Reconnect Gmail")
 
     def test_gmail_connect_needs_config(self):
         self.client.force_login(self.user)

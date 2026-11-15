@@ -1,4 +1,4 @@
-from .models import GmailAccount, Message
+from .models import GmailAccount, Message, Reply
 
 
 def nav(request):
@@ -8,4 +8,5 @@ def nav(request):
     return {
         "nav_gmail": GmailAccount.current(),
         "nav_to_review": Message.objects.filter(status=Message.STATUS_DRAFT).count(),
+        "nav_unread": Reply.objects.filter(is_read=False).count(),
     }
