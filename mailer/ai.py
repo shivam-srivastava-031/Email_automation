@@ -14,7 +14,14 @@ API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:gener
 
 
 class AIError(Exception):
-    """The AI could not write this email (bad key, quota, bad output)."""
+    """The AI could not write this email (bad key, quota, bad output).
+
+    busy=True: Gemini is out of quota or overloaded; try again later, the email itself is fine.
+    """
+
+    def __init__(self, message, busy=False):
+        super().__init__(message)
+        self.busy = busy
 
 
 PROMPT = """You write one short, personal email from the sender to one recipient, in the sender's own voice.
@@ -157,7 +164,7 @@ def _generate(prompt, temperature=0.6, max_tokens=1024, timeout=60):
             detail = resp.json().get("error", {}).get("message", "")
         except ValueError:
             detail = resp.text[:200]
-        raise AIError(f"Gemini error {resp.status_code}: {detail}")
+        raise AIError(f"Gemini error {resp.status_code}: {detail}", busy=resp.status_code in (429, 500, 503))
     try:
         parts = resp.json()["candidates"][0]["content"]["parts"]
         return "".join(p.get("text", "") for p in parts)

@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 
 MAX_SEND_ATTEMPTS = 3
 FOLLOWUP_CHECK_SECONDS = 300
+AI_BUSY_WAIT_SECONDS = 600
+_ai_paused_until = 0.0
 DEFAULT_FOLLOWUP = ("Hi {{first_name}},\n\nJust following up on my email below in case it got buried. "
                     "I'd be glad to share more details or have a quick call whenever it suits you.\n\nThank you for your time.")
 _last_followup_check = 0.0
@@ -177,14 +179,28 @@ def refresh_done(campaign):
 
 # ── worker steps ────────────────────────────────────────────────────────────
 
+def write_ahead(app):
+    """How many first emails to keep written and queued: about two days of sending.
+
+    Writing all of them at once would burn the AI's daily quota for emails
+    that won't go out for weeks (and could not use later fixes to the profile).
+    """
+    return max(10, 2 * safety.effective_limit(app))
+
+
 def write_pending(limit=5, writer=ai.write_email, followup_writer=ai.write_followup):
-    """Let the AI write up to `limit` pending emails (first emails and follow-ups)."""
+    """Let the AI write up to `limit` pending emails (follow-ups first, first emails only as needed)."""
+    global _ai_paused_until
+    if time_mod.monotonic() < _ai_paused_until:
+        return 0
     app = AppSettings.load()
     written = 0
     pending = (Message.objects.select_related("campaign", "contact", "parent")
-               .filter(status=Message.STATUS_PENDING, campaign__status=Campaign.STATUS_RUNNING)
-               .order_by("id")[:limit])
-    for msg in pending:
+               .filter(status=Message.STATUS_PENDING, campaign__status=Campaign.STATUS_RUNNING))
+    queued = Message.objects.filter(step=0, status=Message.STATUS_APPROVED).count()
+    if queued >= write_ahead(app):
+        pending = pending.filter(step__gt=0)
+    for msg in pending.order_by("-step", "id")[:limit]:
         try:
             for _ in range(2):  # an email that fails the check gets one rewrite before it is held
                 if msg.step:
@@ -199,6 +215,10 @@ def write_pending(limit=5, writer=ai.write_email, followup_writer=ai.write_follo
                 if not note:
                     break
         except ai.AIError as exc:
+            if exc.busy:  # out of quota / overloaded: not this email's fault, wait and retry later
+                _ai_paused_until = time_mod.monotonic() + AI_BUSY_WAIT_SECONDS
+                log.warning("AI is busy or out of quota; writing again in %s min: %s", AI_BUSY_WAIT_SECONDS // 60, exc)
+                break
             msg.attempts += 1
             msg.error = str(exc)
             if msg.attempts >= MAX_SEND_ATTEMPTS:

@@ -575,6 +575,32 @@ class AutomationTests(TestCase):
         svc.write_pending(writer=lambda c, ct, app: {"subject": "Hi", "body": good + " Regards to [Company]."})
         self.assertEqual(ai_campaign.messages.get().status, Message.STATUS_DRAFT)
 
+    def test_writes_only_a_couple_of_days_ahead_and_waits_when_ai_is_out_of_quota(self):
+        from . import ai
+        AppSettings.objects.filter(pk=1).update(daily_limit=5, current_limit=5)
+        for i in range(30):
+            Contact.objects.create(email=f"p{i}@co{i}.example", first_name="Jane")
+        ai_campaign = Campaign.objects.create(name="AI", writer=Campaign.WRITER_AI, review_first=False)
+        svc.start(ai_campaign)
+        good = fill(GOOD_BODY, self.jane.merge_values())
+        writer = lambda c, ct, app: {"subject": "Application", "body": good.replace("Jane", ct.first_name)}
+        for _ in range(10):
+            svc.write_pending(writer=writer)
+        approved = ai_campaign.messages.filter(status=Message.STATUS_APPROVED).count()
+        self.assertEqual(approved, svc.write_ahead(AppSettings.load()))  # 2 x today's limit, not all 31
+        self.assertLess(approved, ai_campaign.messages.count())
+
+        Message.objects.filter(campaign=ai_campaign).update(status=Message.STATUS_PENDING)
+        def out_of_quota(c, ct, app):
+            raise ai.AIError("Gemini error 429: quota", busy=True)
+        try:
+            self.assertEqual(svc.write_pending(writer=out_of_quota), 0)
+            self.assertFalse(ai_campaign.messages.filter(attempts__gt=0).exists())  # not counted against the emails
+            self.assertEqual(svc.write_pending(writer=writer), 0)  # waits instead of retrying at once
+        finally:
+            svc._ai_paused_until = 0.0
+        self.assertEqual(svc.write_pending(writer=writer), 5)
+
     def test_never_say_list_is_told_to_the_ai_checked_and_rewritten_once(self):
         from . import ai
         from .quality import check
